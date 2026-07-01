@@ -1,0 +1,32 @@
+# Runtime binaries and model weights
+runtime/llama.cpp/*.exe
+runtime/llama.cpp/*.dll
+runtime/llama.cpp/downloads/*.zip
+runtime/models/**/*.gguf
+runtime/models/*-src/
+runtime/models/**/*-src/
+
+# Local experiment outputs
+experiments/**/outputs/
+experiments/**/reports/
+assets/mascot/transparent/
+
+# Local dev server logs
+apps/floating-window/*.log
+
+# Local runtime state
+apps/desktop-floating-window/state_bridge.json
+**/__pycache__/
+*.py[cod]
+
+# JavaScript dependencies and build outputs
+node_modules/
+dist/
+build/
+.vite/
+
+# Local environment and editor state
+.env
+.env.*
+.DS_Store
+Thumbs.db

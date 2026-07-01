@@ -1,0 +1,137 @@
+{
+  "name": "desktop_mascot_v1",
+  "description": "Original floating AI assistant mascot asset pack.",
+  "sourceDir": "assets/mascot",
+  "preferredDir": "assets/mascot/ready_alpha",
+  "riveImportDir": "assets/mascot/rive_import",
+  "prototypeSprites": {
+    "idle": "assets/mascot/composed/mascot_idle.png",
+    "observing": "assets/mascot/composed/mascot_observing.png",
+    "analyzing": "assets/mascot/composed/mascot_analyzing.png",
+    "privacy": "assets/mascot/composed/mascot_privacy.png",
+    "error": "assets/mascot/composed/mascot_error.png"
+  },
+  "doNotUseForFinal": [
+    "assets/mascot/transparent"
+  ],
+  "notes": [
+    "Root PNG files are the original generated assets and have white RGB backgrounds.",
+    "ready_alpha PNG files preserve the mascot highlights and include an alpha channel.",
+    "composed/mascot_*.png files are stable full-mascot sprites used by the first floating-window prototype.",
+    "transparent PNG files were an early automatic background-removal pass and may damage white highlights."
+  ],
+  "layers": [
+    {
+      "id": "hover_ring",
+      "file": "ready_alpha/hover_ring.png",
+      "z": 0,
+      "role": "hover_effect"
+    },
+    {
+      "id": "bottom_thruster",
+      "file": "ready_alpha/bottom_thruster.png",
+      "z": 1,
+      "role": "body_effect"
+    },
+    {
+      "id": "side_wing_left",
+      "file": "ready_alpha/side_wing_left.png",
+      "z": 2,
+      "role": "body_part"
+    },
+    {
+      "id": "side_wing_right",
+      "file": "ready_alpha/side_wing_right.png",
+      "z": 3,
+      "role": "body_part"
+    },
+    {
+      "id": "body_shell_front",
+      "file": "ready_alpha/body_shell_front.png",
+      "z": 4,
+      "role": "body_shell"
+    },
+    {
+      "id": "face_screen",
+      "file": "ready_alpha/face_screen.png",
+      "z": 5,
+      "role": "face_base"
+    },
+    {
+      "id": "eye_left",
+      "file": "ready_alpha/eye_left.png",
+      "z": 6,
+      "role": "expression_part"
+    },
+    {
+      "id": "eye_right",
+      "file": "ready_alpha/eye_right.png",
+      "z": 7,
+      "role": "expression_part"
+    },
+    {
+      "id": "mouth_smile",
+      "file": "ready_alpha/mouth_smile.png",
+      "z": 8,
+      "role": "expression_part"
+    },
+    {
+      "id": "top_status_light",
+      "file": "ready_alpha/top_status_light.png",
+      "z": 9,
+      "role": "status_indicator"
+    }
+  ],
+  "faceStates": {
+    "idle": {
+      "mode": "composed",
+      "parts": [
+        "face_screen",
+        "eye_left",
+        "eye_right",
+        "mouth_smile"
+      ]
+    },
+    "observing": {
+      "mode": "face_swap",
+      "file": "ready_alpha/face_observing.png"
+    },
+    "analyzing": {
+      "mode": "face_swap",
+      "file": "ready_alpha/face_analyzing.png"
+    },
+    "privacy": {
+      "mode": "face_swap",
+      "file": "ready_alpha/face_privacy.png"
+    },
+    "error": {
+      "mode": "face_swap",
+      "file": "ready_alpha/face_error.png"
+    }
+  },
+  "animationTargets": {
+    "idle": [
+      "hover_ring.opacity",
+      "hover_ring.scale",
+      "body_shell_front.translateY",
+      "bottom_thruster.opacity"
+    ],
+    "observing": [
+      "face_observing.opacity",
+      "top_status_light.opacity"
+    ],
+    "analyzing": [
+      "face_analyzing.opacity",
+      "hover_ring.rotate",
+      "bottom_thruster.opacity"
+    ],
+    "privacy": [
+      "face_privacy.opacity",
+      "body_shell_front.scale"
+    ],
+    "error": [
+      "face_error.opacity",
+      "body_shell_front.translateX"
+    ]
+  }
+}
