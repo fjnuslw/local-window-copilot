@@ -13,13 +13,14 @@ Implemented:
 - Per-pixel alpha rendering with Win32 `UpdateLayeredWindow`
 - Local mascot rendering with Pillow and PNG layers
 - State contract: `idle`, `observing`, `analyzing`, `privacy`, `error`
+- FastAPI state service in `backend/`
+- Backend-driven desktop state bridge on `127.0.0.1:18080`
 - Web visual prototype in `apps/floating-window/`
 - MiniCPM-V 4.6 F16 and llama.cpp runtime plan
 - Project planning docs under `project_plan/`
 
 In progress next:
 
-- FastAPI local state service on `127.0.0.1:18080`
 - Window capture service
 - Local llama.cpp server integration on `127.0.0.1:18181`
 - Redis task state and PostgreSQL behavior logging
@@ -65,6 +66,8 @@ apps/
   desktop-floating-window/    # Native Windows floating assistant
   floating-window/            # Web visual prototype
 
+backend/                       # FastAPI local backend
+
 assets/
   mascot/                     # Local mascot PNG layers and composed states
 
@@ -101,6 +104,28 @@ python apps\desktop-floating-window\set_state.py observing
 python apps\desktop-floating-window\set_state.py analyzing
 python apps\desktop-floating-window\set_state.py privacy
 python apps\desktop-floating-window\set_state.py error
+```
+
+## Run The FastAPI Backend
+
+```powershell
+cd backend
+uv run uvicorn app.main:app --host 127.0.0.1 --port 18080 --reload
+```
+
+Health check:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:18080/health
+```
+
+Drive the desktop assistant state through FastAPI:
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:18080/api/assistant/state `
+  -ContentType "application/json" `
+  -Body '{"state":"analyzing","reason":"manual-test"}'
 ```
 
 ## Run The Web Prototype
@@ -142,7 +167,7 @@ The project is intentionally non-executing:
 
 ## Roadmap
 
-The immediate next milestone is the FastAPI state service:
+Completed backend state milestone:
 
 ```text
 GET  /health
@@ -151,7 +176,7 @@ POST /api/assistant/state
 GET  /api/assistant/events
 ```
 
-After that:
+Next:
 
 ```text
 window capture -> privacy filter -> MiniCPM-V inference -> Redis async state -> PostgreSQL analysis logs

@@ -16,5 +16,6 @@
 - 不先做 Ollama、PyTorch、云端兼容接口等过渡路线。
 - 直接按目标路线实现：`MiniCPM-V 4.6 GGUF + mmproj + 内置 llama.cpp runtime`。
 - 当前 MVP 桌面壳固定为 `Python + Win32 layered window + Pillow`，先做真实桌面悬浮窗，再接 FastAPI 和模型链路。
+- FastAPI 状态中枢已经落地在 `backend/`，端口固定为 `127.0.0.1:18080`。
 - 第一阶段直接选择真实具体场景，例如 IDE / 终端报错、安装失败 / 权限错误窗口。
 - 所有早期样本和代码都应能沉淀为最终产品能力或评估数据。

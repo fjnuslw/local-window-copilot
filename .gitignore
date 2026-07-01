@@ -13,6 +13,7 @@ assets/mascot/transparent/
 
 # Local dev server logs
 apps/floating-window/*.log
+backend/*.log
 
 # Local runtime state
 apps/desktop-floating-window/state_bridge.json
@@ -24,6 +25,12 @@ node_modules/
 dist/
 build/
 .vite/
+
+# Python tooling
+.venv/
+.pytest_cache/
+.ruff_cache/
+.tmp/
 
 # Local environment and editor state
 .env

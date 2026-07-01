@@ -120,6 +120,34 @@ Pillow 做 RGBA 合成与动画渲染
 JSON 文件作为临时状态桥
 ```
 
+### 2.5 FastAPI 状态中枢
+
+路径：
+
+```text
+backend/
+```
+
+当前能力：
+
+```text
+uv 管理 Python 环境
+FastAPI 服务运行在 127.0.0.1:18080
+GET /health
+GET /api/assistant/state
+POST /api/assistant/state
+GET /api/assistant/events
+写入 apps/desktop-floating-window/state_bridge.json
+```
+
+已验证：
+
+```text
+uv run pytest：2 passed
+POST /api/assistant/state 可驱动桌面悬浮窗状态
+state_bridge.json 写入 source=fastapi
+```
+
 ## 3. 当前主线架构
 
 ```text
@@ -147,7 +175,7 @@ MiniCPM-V 4.6 F16
 
 ## 4. 下一步最高优先级
 
-下一步不再继续优化动画工具链，而是把桌面悬浮窗接入真实后端事件。
+FastAPI 状态服务已经完成。下一步不再继续优化动画工具链，而是接入真实窗口采集。
 
 ### Step 1：FastAPI 状态服务
 
@@ -156,6 +184,8 @@ MiniCPM-V 4.6 F16
 ```text
 让桌面悬浮窗不再靠手动 set_state.py，而是监听 FastAPI 状态事件。
 ```
+
+状态：已完成第一版。当前仍通过 `state_bridge.json` 兼容桌面悬浮窗，后续可替换为 SSE / WebSocket 直连。
 
 建议接口：
 
