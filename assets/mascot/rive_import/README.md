@@ -12,7 +12,7 @@ This folder is the first Rive-ready import package for the desktop floating assi
 
 Runtime export is currently blocked by the Rive workspace plan. The editor shows `Upgrade to export` for `Export -> For runtime`, so no local `.riv` file has been produced yet.
 
-Until `desktop_mascot_v1.riv` is exported, the floating-window prototype should keep using the PNG sprite fallback in `assets/mascot/composed/`.
+Until `desktop_mascot_v1.riv` is exported, the floating-window prototype should keep using the aligned PNG layers in this folder.
 
 ## Import Files
 

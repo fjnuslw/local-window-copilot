@@ -17,6 +17,8 @@ backend/*.log
 
 # Local runtime state
 apps/desktop-floating-window/state_bridge.json
+apps/desktop-floating-window/latest_analysis.json
+backend/data/
 **/__pycache__/
 *.py[cod]
 
@@ -37,3 +39,5 @@ build/
 .env.*
 .DS_Store
 Thumbs.db
+.idea/
+.trae-html-share-packages/

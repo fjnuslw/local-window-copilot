@@ -1,185 +1,101 @@
 # Local Window Copilot
 
-A privacy-first local window-aware AI copilot powered by MiniCPM-V, llama.cpp, FastAPI, and a native Windows floating assistant.
+Windows 本地桌宠式窗口 Copilot 原型。
 
-This project explores a non-executing desktop AI assistant: it observes the current window, understands the visual and UI context, suggests useful questions, and answers based on that context. It does not click, type, submit forms, delete files, or operate the computer on behalf of the user.
+它通过悬浮机器人观察当前前台窗口，使用本地 FastAPI 服务和本地 MiniCPM-V / llama.cpp 生成轻量摘要、候选问题，并在用户追问时结合最近观察和短期会话记忆回答。
 
-## Current Status
-
-Implemented:
-
-- Native Windows floating assistant in `apps/desktop-floating-window/`
-- Borderless always-on-top transparent window
-- Per-pixel alpha rendering with Win32 `UpdateLayeredWindow`
-- Local mascot rendering with Pillow and PNG layers
-- State contract: `idle`, `observing`, `analyzing`, `privacy`, `error`
-- FastAPI state service in `backend/`
-- Backend-driven desktop state bridge on `127.0.0.1:18080`
-- Web visual prototype in `apps/floating-window/`
-- MiniCPM-V 4.6 F16 and llama.cpp runtime plan
-- Project planning docs under `project_plan/`
-
-In progress next:
-
-- Window capture service
-- Local llama.cpp server integration on `127.0.0.1:18181`
-- Redis task state and PostgreSQL behavior logging
-
-## Architecture
+当前定位：
 
 ```text
-Native Windows Floating Assistant
-  Python + Win32 + Pillow
-  |
-  | state events
-  v
-FastAPI Local Backend
-  |
-  +-- Window Capture Service
-  +-- Privacy Filter
-  +-- Context Builder
-  +-- ModelRuntimeManager
-  |
-  +-- Redis task status / cache
-  +-- PostgreSQL analysis and event logs
-  |
-  v
-llama.cpp server
-  |
-  v
-MiniCPM-V 4.6 F16
+快速感知用户正在做什么
+给出轻量互动提示和候选问题
+用户具体提问时，结合当前截图摘要、最近观察和短期记忆回答
+不自动点击、不自动输入、不自动执行电脑操作
+不做 OCR/UIA 主链路
+不做重型规划 Agent
 ```
 
-## Tech Stack
-
-- Desktop shell: Python 3, Win32 API via `ctypes`, Pillow
-- Transparency: Win32 layered window with per-pixel alpha
-- Backend target: FastAPI, Pydantic
-- Model runtime target: llama.cpp server
-- Vision-language model target: MiniCPM-V 4.6 GGUF, F16
-- Future engineering layers: Redis, PostgreSQL, SQLAlchemy, Alembic
-
-## Repository Layout
+## 主链路
 
 ```text
-apps/
-  desktop-floating-window/    # Native Windows floating assistant
-  floating-window/            # Web visual prototype
-
-backend/                       # FastAPI local backend
-
-assets/
-  mascot/                     # Local mascot PNG layers and composed states
-
-experiments/
-  prompts/                    # Prompt drafts and model experiments
-
-project_plan/                 # Project plan, execution roadmap, deployment plan
-
-runtime/
-  README.md
-  models/minicpm-v4.6/
-    model_manifest.json       # Model manifest only; weights are not committed
-  llama.cpp/
-    README.md                 # Runtime notes only; binaries are not committed
+Windows 桌面悬浮窗
+-> FastAPI backend
+-> SQLite RuntimeStore
+-> llama.cpp server
+-> MiniCPM-V 视觉语言模型
+-> 小机器人摘要面板
+-> 独立悬浮对话窗
 ```
 
-## Run The Desktop Floating Window
-
-```powershell
-python apps\desktop-floating-window\desktop_floating_window.py
-```
-
-Or double-click:
+`RuntimeStore` 是本地 SQLite 文件，默认路径：
 
 ```text
-apps/desktop-floating-window/start_desktop_window.cmd
+backend/data/runtime/runtime.sqlite3
 ```
 
-Switch state manually:
+它保存助手状态、最近窗口分析、当前对话、历史对话和短期会话记忆。普通用户不需要安装额外服务。
+
+## 启动
 
 ```powershell
-python apps\desktop-floating-window\set_state.py idle
-python apps\desktop-floating-window\set_state.py observing
-python apps\desktop-floating-window\set_state.py analyzing
-python apps\desktop-floating-window\set_state.py privacy
-python apps\desktop-floating-window\set_state.py error
+cd D:\AI_Workspace\window
+.\scripts\start_dev.cmd
 ```
 
-## Run The FastAPI Backend
+启动前检查：
 
 ```powershell
-cd backend
-uv run uvicorn app.main:app --host 127.0.0.1 --port 18080 --reload
+python .\scripts\check_environment.py --for-start
 ```
 
-Health check:
+手动启动后端：
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:18080/health
+cd D:\AI_Workspace\window\backend
+uv run uvicorn app.main:app --host 127.0.0.1 --port 18080 --reload --no-access-log
 ```
 
-Drive the desktop assistant state through FastAPI:
+手动启动悬浮窗：
 
 ```powershell
-Invoke-RestMethod -Method Post `
-  -Uri http://127.0.0.1:18080/api/assistant/state `
-  -ContentType "application/json" `
-  -Body '{"state":"analyzing","reason":"manual-test"}'
+cd D:\AI_Workspace\window
+.\apps\desktop-floating-window\start_desktop_window.cmd
 ```
 
-## Run The Web Prototype
-
-```powershell
-cd apps\floating-window
-npm start
-```
-
-Then open:
-
-```text
-http://127.0.0.1:4173/apps/floating-window/index.html
-```
-
-## Model Files
-
-Large model weights and runtime binaries are intentionally excluded from Git.
-
-Expected local files:
-
-```text
-runtime/models/minicpm-v4.6/MiniCPM-V-4_6-F16.gguf
-runtime/models/minicpm-v4.6/mmproj-model-f16.gguf
-runtime/llama.cpp/llama-server.exe
-```
-
-The repository keeps only `model_manifest.json` and runtime notes so the public repo stays lightweight.
-
-## Privacy Boundary
-
-The project is intentionally non-executing:
-
-- It does not automate clicks or keyboard input.
-- It does not submit forms.
-- It does not delete, install, or modify system settings.
-- It should default to local inference.
-- It should not save raw screenshots or sensitive UI fields by default.
-
-## Roadmap
-
-Completed backend state milestone:
+## 接口
 
 ```text
 GET  /health
 GET  /api/assistant/state
 POST /api/assistant/state
-GET  /api/assistant/events
+GET  /api/assistant/latest
+POST /api/assistant/questions
+GET  /api/assistant/conversation
+GET  /api/assistant/conversations
+POST /api/assistant/resume
+POST /api/window/capture
+POST /api/window/watch/start
+POST /api/window/watch/stop
+GET  /api/window/watch/status
 ```
 
-Next:
+## 代码入口
 
 ```text
-window capture -> privacy filter -> MiniCPM-V inference -> Redis async state -> PostgreSQL analysis logs
+backend/app/main.py
+backend/app/services/runtime_store.py
+backend/app/services/window_capture.py
+backend/app/services/window_watcher.py
+backend/app/services/window_analysis.py
+backend/app/services/observation_builder.py
+backend/app/services/memory.py
+backend/app/services/assistant_chat.py
+apps/desktop-floating-window/desktop_floating_window.py
 ```
 
-See [project_plan/current_execution_status_and_roadmap.md](project_plan/current_execution_status_and_roadmap.md) for the current execution plan.
+## 测试
+
+```powershell
+cd D:\AI_Workspace\window\backend
+uv run pytest --basetemp D:\AI_Workspace\window\.tmp\pytest-basetemp
+```

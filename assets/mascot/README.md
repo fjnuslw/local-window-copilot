@@ -4,7 +4,7 @@ This folder contains the original floating AI assistant mascot assets.
 
 Use `rive_import/` for the current floating-window mascot runtime. It contains one aligned base PNG and four aligned face-overlay PNGs on the same `628 x 462` canvas, so the frontend can switch states without relying on Rive export.
 
-Use `composed/mascot_*.png` only as fallback full-sprite assets. The current prototype has moved to the layer-based `rive_import/` files.
+Use `composed/mascot_*.png` only as archived full-sprite assets. The current prototype uses the layer-based `rive_import/` files.
 
 Use `ready_alpha/` for future finer-grained layer-level product work. These PNG files have real alpha channels and preserve the white shell highlights.
 
@@ -13,7 +13,7 @@ Do not use `transparent/` for final UI or Rive import. It was an early backgroun
 ## Folders
 
 - Root PNG files: original generated assets with white RGB backgrounds.
-- `composed/`: fallback full mascot sprites, including idle, observing, analyzing, privacy, and error states.
+- `composed/`: archived full mascot sprites, including idle, observing, analyzing, privacy, and error states.
 - `rive_import/`: current aligned import kit and local layered runtime assets.
 - `ready_alpha/`: preferred alpha PNG assets for frontend and Rive work.
 - `transparent/`: local experimental alpha pass, ignored in Git because it can damage white highlights and is not part of the product path.

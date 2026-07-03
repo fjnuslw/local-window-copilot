@@ -1,60 +1,40 @@
 # Desktop Floating Window
 
-This is the first real desktop-window slice for the local window-aware assistant.
+原生 Windows 透明悬浮窗。
 
-It is not a browser page. It opens a borderless, always-on-top transparent Windows floating window using a native Win32 layered window and local mascot PNG layers.
-
-## Current Tech Stack
-
-- Runtime language: Python 3.
-- Desktop window: Win32 API through `ctypes`.
-- Transparency: per-pixel alpha with `UpdateLayeredWindow`, not chroma-key green-screen transparency.
-- Rendering: Pillow RGBA compositing.
-- Assets: local PNG base layer plus face overlays from `assets/mascot/rive_import/`.
-- State bridge: local JSON file polling through `state_bridge.json`.
-- Packaging status: prototype runtime script; not packaged as an installer yet.
-
-## Run
-
-```powershell
-python apps\desktop-floating-window\desktop_floating_window.py
-```
-
-Or double-click:
+职责：
 
 ```text
-apps/desktop-floating-window/start_desktop_window.cmd
+显示桌宠状态
+显示最近窗口摘要
+展示候选问题
+接收用户自定义提问
+打开独立悬浮对话窗
+轮询 FastAPI 当前对话和历史对话
 ```
 
-Controls:
-
-- Drag the mascot area to move the window.
-- Click the mascot to cycle states.
-- Click the five toolbar buttons to switch states directly.
-- Press `Esc` or `Ctrl+Q`, or click the small top-right close button, to exit.
-
-## State Bridge
-
-The window watches:
+悬浮窗只访问：
 
 ```text
-apps/desktop-floating-window/state_bridge.json
+http://127.0.0.1:18080
 ```
 
-Change it with:
+它不直接读写本地数据库文件。
+
+## 启动
 
 ```powershell
-python apps\desktop-floating-window\set_state.py analyzing
-python apps\desktop-floating-window\set_state.py privacy
-python apps\desktop-floating-window\set_state.py error
+cd D:\AI_Workspace\window
+.\apps\desktop-floating-window\start_desktop_window.cmd
 ```
 
-This is a temporary local bridge. The final app should expose the same state contract through FastAPI WebSocket/SSE or a Tauri command channel.
+## 主要接口
 
-## State Contract
-
-- `idle`: assistant is waiting.
-- `observing`: screen/window capture is active.
-- `analyzing`: MiniCPM-V / llama.cpp inference is running.
-- `privacy`: permission or privacy boundary is being shown.
-- `error`: local model, capture, or backend failed.
+```text
+GET  /api/assistant/state
+GET  /api/assistant/latest
+GET  /api/assistant/conversation
+GET  /api/assistant/conversations
+POST /api/assistant/questions
+POST /api/assistant/resume
+```

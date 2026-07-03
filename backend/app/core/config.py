@@ -7,18 +7,78 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+ENV_FILE_PATH = PROJECT_ROOT / "backend" / ".env"
 
 
 class Settings(BaseSettings):
     app_name: str = "Local Window Copilot Backend"
     app_version: str = "0.1.0"
-    assistant_state_bridge_path: Path = (
-        PROJECT_ROOT / "apps" / "desktop-floating-window" / "state_bridge.json"
+    window_capture_dir: Path = PROJECT_ROOT / "backend" / "data" / "captures"
+    auto_start_window_watch: bool = True
+    window_watch_interval_seconds: float = 1.0
+    window_capture_min_interval_seconds: float = 2.0
+    window_analysis_min_interval_seconds: float = 6.0
+    llama_server_path: Path = PROJECT_ROOT / "runtime" / "llama.cpp" / "llama-server.exe"
+    minicpm_model_path: Path = (
+        PROJECT_ROOT / "runtime" / "models" / "minicpm-v4.6" / "MiniCPM-V-4_6-F16.gguf"
     )
+    minicpm_mmproj_path: Path = (
+        PROJECT_ROOT / "runtime" / "models" / "minicpm-v4.6" / "mmproj-model-f16.gguf"
+    )
+    minicpm_model_name: str = "minicpm-v4.6-f16"
+    minicpm_ctx_size: int = 8192
+    llama_server_host: str = "127.0.0.1"
+    llama_server_port: int = 18181
+    llama_chat_completions_path: str = "/v1/chat/completions"
+    llama_startup_timeout_seconds: float = 45.0
+    llama_request_timeout_seconds: float = 120.0
+    model_image_long_edge: int = 512
+    runtime_store_path: Path = PROJECT_ROOT / "backend" / "data" / "runtime" / "runtime.sqlite3"
+    window_analysis_prompt_path: Path = (
+        PROJECT_ROOT / "experiments" / "prompts" / "analyze_window_v2.txt"
+    )
+    latest_analysis_ttl_seconds: int = 86400
     cors_origins: list[str] = [
         "http://127.0.0.1:4173",
         "http://localhost:4173",
     ]
+
+    # --- 模型调用参数（原硬编码于 vision_model_client.py）---
+    analyze_temperature: float = 0.1
+    analyze_max_tokens: int = 1200
+    answer_temperature: float = 0.2
+    answer_max_tokens: int = 800
+
+    # --- 上下文窗口（原硬编码于 assistant_chat.py / vision_model_client.py）---
+    chat_history_turns: int = 6
+    chat_history_question_max_chars: int = 500
+    chat_history_answer_max_chars: int = 800
+    history_retention_limit: int = 30
+    chat_include_screenshot: bool = False
+
+    # --- 窗口摘要历史（识图摘要存档，供对话 agent 检索）---
+    window_summary_history_limit: int = 30
+    window_summary_retrieve_count: int = 5
+
+    # --- 记忆系统（原硬编码于 memory.py / assistant_chat.py）---
+    memory_enabled: bool = True
+    memory_max_items: int = 40
+    memory_retrieve_count: int = 4
+    memory_item_max_chars: int = 220
+
+    # --- 性格与人设（新增，用于上下文管理）---
+    personality_enabled: bool = False
+    personality_name: str = ""
+    personality_traits: str = ""
+    system_prompt_prefix: str = ""
+    answer_style_hint: str = ""
+
+    @property
+    def llama_chat_completions_endpoint(self) -> str:
+        return (
+            f"http://{self.llama_server_host}:{self.llama_server_port}"
+            f"{self.llama_chat_completions_path}"
+        )
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -30,3 +90,13 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def reload_settings() -> Settings:
+    """清除 settings 缓存并重新读取 .env。
+
+    注意：依赖 settings 的服务单例（vision_model_client / assistant_chat /
+    memory）各自也有 lru_cache，调用方需一并清除它们的缓存才能真正生效。
+    """
+    get_settings.cache_clear()
+    return get_settings()

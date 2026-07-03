@@ -4,7 +4,11 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from app.schemas.assistant import AssistantStateResponse, AssistantStateUpdate
+from app.schemas.analyze import WindowAnalysisResult
+from app.schemas.chat import ChatHistoryResponse, ChatQuestionRequest, ChatSession
+from app.services.assistant_chat import get_assistant_chat_service
 from app.services.assistant_state import get_assistant_state_service
+from app.services.window_analysis import get_window_analysis_service
 
 
 router = APIRouter(prefix="/api/assistant", tags=["assistant"])
@@ -33,3 +37,40 @@ async def events() -> StreamingResponse:
             "Connection": "keep-alive",
         },
     )
+
+
+@router.get("/latest", response_model=WindowAnalysisResult | None)
+def latest_analysis() -> WindowAnalysisResult | None:
+    return get_window_analysis_service().get_latest()
+
+
+@router.post("/questions", response_model=ChatSession)
+async def ask_question(payload: ChatQuestionRequest) -> ChatSession:
+    return await get_assistant_chat_service().ask(payload.question)
+
+
+@router.get("/conversation", response_model=ChatSession | None)
+def current_conversation() -> ChatSession | None:
+    return get_assistant_chat_service().current()
+
+
+@router.get("/conversations", response_model=ChatHistoryResponse)
+def conversation_history() -> ChatHistoryResponse:
+    return ChatHistoryResponse(items=get_assistant_chat_service().history())
+
+
+@router.post("/conversations/clear")
+def clear_conversations() -> dict[str, int]:
+    cleared = get_assistant_chat_service().clear_history()
+    return {"cleared": cleared}
+
+
+@router.post("/context-preview")
+def context_preview(payload: ChatQuestionRequest) -> dict[str, object]:
+    return get_assistant_chat_service().inspect_context(payload.question)
+
+
+@router.post("/resume")
+async def resume_auto_watch() -> dict[str, bool]:
+    await get_assistant_chat_service().resume_auto_watch()
+    return {"running": True}

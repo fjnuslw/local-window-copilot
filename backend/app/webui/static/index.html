@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Local Window Copilot · 控制台</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #161a22;
+    --panel-2: #1c212b;
+    --border: #2a3140;
+    --text: #e6e9ef;
+    --text-dim: #8b94a5;
+    --accent: #4c8dff;
+    --accent-hover: #6ba0ff;
+    --success: #34d399;
+    --warn: #fbbf24;
+    --danger: #f87171;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    padding: 12px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .tabs { display: flex; gap: 4px; }
+  .tab {
+    padding: 6px 14px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    color: var(--text-dim);
+    border: 1px solid transparent;
+    transition: all 0.15s;
+  }
+  .tab:hover { color: var(--text); background: var(--panel-2); }
+  .tab.active { color: var(--accent); background: var(--panel-2); border-color: var(--border); }
+  .status-dot { margin-left: auto; font-size: 12px; color: var(--text-dim); }
+  .status-dot .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--success); margin-right: 6px; vertical-align: middle; }
+  main { padding: 24px; max-width: 1200px; margin: 0 auto; }
+  .page { display: none; }
+  .page.active { display: block; }
+
+  /* 配置页 */
+  .group-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .group-card h3 {
+    margin: 0;
+    padding: 12px 16px;
+    font-size: 14px;
+    background: var(--panel-2);
+    border-bottom: 1px solid var(--border);
+  }
+  .fields { padding: 8px 16px 16px; }
+  .field { padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .field:last-child { border-bottom: none; }
+  .field-label { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .field-label label { font-weight: 500; }
+  .field-label .env-key { font-family: monospace; font-size: 11px; color: var(--text-dim); background: var(--bg); padding: 1px 6px; border-radius: 4px; }
+  .field-desc { font-size: 12px; color: var(--text-dim); margin-bottom: 6px; }
+  .field input[type="text"], .field input[type="number"], .field textarea {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 7px 10px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  .field textarea { min-height: 70px; resize: vertical; font-family: inherit; }
+  .field input:focus, .field textarea:focus { outline: none; border-color: var(--accent); }
+  .switch { position: relative; display: inline-block; width: 40px; height: 22px; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider { position: absolute; cursor: pointer; inset: 0; background: var(--border); border-radius: 22px; transition: 0.2s; }
+  .slider:before { content: ""; position: absolute; height: 16px; width: 16px; left: 3px; bottom: 3px; background: white; border-radius: 50%; transition: 0.2s; }
+  .switch input:checked + .slider { background: var(--accent); }
+  .switch input:checked + .slider:before { transform: translateX(18px); }
+  .actions { position: sticky; bottom: 0; padding: 12px 0; display: flex; gap: 8px; justify-content: flex-end; }
+  .btn {
+    padding: 7px 16px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 13px;
+    transition: all 0.15s;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn-primary { background: var(--accent); border-color: var(--accent); color: white; }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-danger { color: var(--danger); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--success);
+    color: #06251a;
+    padding: 10px 20px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    opacity: 0;
+    transition: opacity 0.2s;
+    pointer-events: none;
+    z-index: 100;
+  }
+  .toast.show { opacity: 1; }
+  .toast.error { background: var(--danger); color: #2a0808; }
+
+  /* 对话调试页 */
+  .chat-layout { display: grid; grid-template-columns: 280px 1fr; gap: 16px; }
+  .chat-sidebar, .chat-main {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .sidebar-header {
+    padding: 10px 14px;
+    background: var(--panel-2);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-weight: 500;
+    font-size: 13px;
+  }
+  .history-list { max-height: 520px; overflow-y: auto; }
+  .history-item { padding: 10px 14px; border-bottom: 1px solid var(--border); cursor: pointer; }
+  .history-item:hover { background: var(--panel-2); }
+  .history-q { font-size: 13px; font-weight: 500; margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .history-a { font-size: 12px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .history-time { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+  .history-empty { padding: 24px 14px; text-align: center; color: var(--text-dim); font-size: 12px; }
+  .chat-area { padding: 16px; }
+  .chat-display {
+    min-height: 200px;
+    max-height: 320px;
+    overflow-y: auto;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+    margin-bottom: 12px;
+    font-size: 13px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .chat-display .placeholder { color: var(--text-dim); }
+  .chat-input-row { display: flex; gap: 8px; }
+  .chat-input-row textarea {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 13px;
+    font-family: inherit;
+    resize: none;
+    min-height: 44px;
+    max-height: 100px;
+  }
+  .context-section { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 16px; }
+  .context-section h4 { margin: 0 0 8px; font-size: 13px; color: var(--text-dim); }
+  .context-display { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-size: 12px; max-height: 300px; overflow-y: auto; }
+  .context-block { margin-bottom: 12px; }
+  .context-block h5 { margin: 0 0 4px; font-size: 12px; color: var(--accent); }
+  .context-turn { padding: 6px 8px; background: var(--panel-2); border-radius: 4px; margin-bottom: 4px; }
+  .context-memory { padding: 6px 8px; background: var(--panel-2); border-radius: 4px; margin-bottom: 4px; }
+  .badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; background: var(--border); color: var(--text-dim); margin-right: 4px; }
+  .badge.on { background: var(--success); color: #06251a; }
+  .badge.off { background: var(--border); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Local Window Copilot</h1>
+  <div class="tabs">
+    <div class="tab active" data-page="config">配置</div>
+    <div class="tab" data-page="chat">对话调试</div>
+  </div>
+  <div class="status-dot"><span class="dot" id="statusDot"></span><span id="statusText">连接中</span></div>
+</header>
+
+<main>
+  <!-- 配置页 -->
+  <div class="page active" id="page-config">
+    <div id="configGroups"></div>
+    <div class="actions">
+      <button class="btn" id="resetBtn">重置为默认</button>
+      <button class="btn btn-primary" id="saveBtn">保存并热重载</button>
+    </div>
+  </div>
+
+  <!-- 对话调试页 -->
+  <div class="page" id="page-chat">
+    <div class="chat-layout">
+      <div class="chat-sidebar">
+        <div class="sidebar-header">
+          <span>会话历史</span>
+          <button class="btn btn-danger" id="clearHistoryBtn" style="padding:2px 8px;font-size:11px;">清空</button>
+        </div>
+        <div class="history-list" id="historyList"><div class="history-empty">加载中…</div></div>
+      </div>
+      <div class="chat-main">
+        <div class="chat-area">
+          <div class="chat-display" id="chatDisplay"><span class="placeholder">输入问题发起追问（需先有窗口分析结果）</span></div>
+          <div class="chat-input-row">
+            <textarea id="chatInput" placeholder="输入问题，Ctrl+Enter 发送…" rows="2"></textarea>
+            <button class="btn btn-primary" id="sendBtn">发送</button>
+          </div>
+          <div class="context-section">
+            <h4>上下文透视（预览将注入的内容，不会真正调用模型）</h4>
+            <div class="chat-input-row" style="margin-bottom:8px;">
+              <input type="text" id="contextInput" placeholder="输入要预览的问题…" class="chat-input" style="flex:1;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px 10px;font-size:13px;">
+              <button class="btn" id="previewCtxBtn">预览上下文</button>
+            </div>
+            <div class="context-display" id="contextDisplay"><span class="placeholder">点击「预览上下文」查看将注入的历史与记忆</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API_BASE = "";
+let configCache = null;
+
+// ---------- 通用工具 ----------
+async function fetchJSON(url, options = {}) {
+  const res = await fetch(API_BASE + url, {
+    headers: { "Content-Type": "application/json" },
+    ...options,
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`${res.status} ${res.statusText} ${txt}`);
+  }
+  return res.json();
+}
+
+function showToast(msg, isError = false) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.className = "toast show" + (isError ? " error" : "");
+  setTimeout(() => { el.className = "toast"; }, 2500);
+}
+
+function escapeHTML(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// ---------- Tab 切换 ----------
+document.querySelectorAll(".tab").forEach(tab => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+    document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
+    tab.classList.add("active");
+    document.getElementById("page-" + tab.dataset.page).classList.add("active");
+    if (tab.dataset.page === "chat") loadHistory();
+  });
+});
+
+// ---------- 健康检查 ----------
+async function checkHealth() {
+  try {
+    const data = await fetchJSON("/health");
+    document.getElementById("statusDot").style.background = "var(--success)";
+    document.getElementById("statusText").textContent = `运行中 · ${data.assistant_state}`;
+  } catch {
+    document.getElementById("statusDot").style.background = "var(--danger)";
+    document.getElementById("statusText").textContent = "后端未连接";
+  }
+}
+checkHealth();
+setInterval(checkHealth, 5000);
+
+// ---------- 配置页 ----------
+async function loadConfig() {
+  const container = document.getElementById("configGroups");
+  try {
+    const data = await fetchJSON("/api/webui/config");
+    configCache = data;
+    container.innerHTML = data.groups.map(group => `
+      <div class="group-card">
+        <h3>${escapeHTML(group.label)}</h3>
+        <div class="fields">
+          ${group.fields.map(renderField).join("")}
+        </div>
+      </div>
+    `).join("");
+  } catch (e) {
+    container.innerHTML = `<div class="group-card"><div class="fields">加载失败：${escapeHTML(e.message)}</div></div>`;
+  }
+}
+
+function renderField(f) {
+  const value = f.value;
+  let control;
+  if (f.type === "boolean") {
+    control = `<label class="switch"><input type="checkbox" data-key="${f.key}" ${value ? "checked" : ""}><span class="slider"></span></label>`;
+  } else if (f.type === "text") {
+    control = `<textarea data-key="${f.key}">${escapeHTML(value)}</textarea>`;
+  } else if (f.type === "number") {
+    control = `<input type="number" step="any" data-key="${f.key}" value="${escapeHTML(value)}">`;
+  } else {
+    control = `<input type="text" data-key="${f.key}" value="${escapeHTML(value)}">`;
+  }
+  return `
+    <div class="field">
+      <div class="field-label">
+        <label>${escapeHTML(f.label)}</label>
+        <span class="env-key">${escapeHTML(f.env_key)}</span>
+      </div>
+      <div class="field-desc">${escapeHTML(f.description)}</div>
+      ${control}
+    </div>
+  `;
+}
+
+function collectConfigValues() {
+  const values = {};
+  document.querySelectorAll("#configGroups [data-key]").forEach(el => {
+    const key = el.dataset.key;
+    if (el.type === "checkbox") {
+      values[key] = el.checked;
+    } else if (el.type === "number") {
+      values[key] = el.value === "" ? 0 : Number(el.value);
+    } else {
+      values[key] = el.value;
+    }
+  });
+  return values;
+}
+
+document.getElementById("saveBtn").addEventListener("click", async () => {
+  const btn = document.getElementById("saveBtn");
+  btn.disabled = true;
+  btn.textContent = "保存中…";
+  try {
+    const values = collectConfigValues();
+    const res = await fetchJSON("/api/webui/config", {
+      method: "PUT",
+      body: JSON.stringify({ values }),
+    });
+    showToast(res.message);
+  } catch (e) {
+    showToast("保存失败：" + e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "保存并热重载";
+  }
+});
+
+document.getElementById("resetBtn").addEventListener("click", async () => {
+  if (!confirm("将所有字段重置为默认值并写回 .env？")) return;
+  try {
+    const data = await fetchJSON("/api/webui/config");
+    const defaults = {};
+    data.groups.forEach(g => g.fields.forEach(f => { defaults[f.key] = f.default; }));
+    const res = await fetchJSON("/api/webui/config", {
+      method: "PUT",
+      body: JSON.stringify({ values: defaults }),
+    });
+    showToast(res.message);
+    await loadConfig();
+  } catch (e) {
+    showToast("重置失败：" + e.message, true);
+  }
+});
+
+loadConfig();
+
+// ---------- 对话调试页 ----------
+let pollingTimer = null;
+
+async function loadHistory() {
+  const list = document.getElementById("historyList");
+  try {
+    const data = await fetchJSON("/api/assistant/conversations");
+    if (!data.items || data.items.length === 0) {
+      list.innerHTML = `<div class="history-empty">暂无历史对话</div>`;
+      return;
+    }
+    list.innerHTML = data.items.map(s => `
+      <div class="history-item" data-session='${escapeHTML(JSON.stringify(s))}'>
+        <div class="history-q">${escapeHTML(s.question)}</div>
+        <div class="history-a">${escapeHTML(s.answer.slice(0, 80))}${s.answer.length > 80 ? "…" : ""}</div>
+        <div class="history-time">${new Date(s.updated_at).toLocaleString("zh-CN")}</div>
+      </div>
+    `).join("");
+    list.querySelectorAll(".history-item").forEach(el => {
+      el.addEventListener("click", () => {
+        const s = JSON.parse(el.dataset.session);
+        document.getElementById("chatDisplay").innerHTML = `<strong>Q：</strong>${escapeHTML(s.question)}\n\n<strong>A：</strong>${escapeHTML(s.answer)}${s.error ? `\n\n[错误] ${escapeHTML(s.error)}` : ""}`;
+      });
+    });
+  } catch (e) {
+    list.innerHTML = `<div class="history-empty">加载失败：${escapeHTML(e.message)}</div>`;
+  }
+}
+
+async function sendQuestion() {
+  const input = document.getElementById("chatInput");
+  const question = input.value.trim();
+  if (!question) return;
+  const btn = document.getElementById("sendBtn");
+  btn.disabled = true;
+  const display = document.getElementById("chatDisplay");
+  display.innerHTML = `<strong>Q：</strong>${escapeHTML(question)}\n\n<strong>A：</strong>生成中…`;
+  try {
+    await fetchJSON("/api/assistant/questions", {
+      method: "POST",
+      body: JSON.stringify({ question }),
+    });
+    input.value = "";
+    startPolling(question);
+  } catch (e) {
+    display.innerHTML = `<strong>Q：</strong>${escapeHTML(question)}\n\n[发送失败] ${escapeHTML(e.message)}`;
+    btn.disabled = false;
+  }
+}
+
+function startPolling(question) {
+  if (pollingTimer) clearInterval(pollingTimer);
+  let lastAnswer = "";
+  pollingTimer = setInterval(async () => {
+    try {
+      const s = await fetchJSON("/api/assistant/conversation");
+      if (!s) return;
+      const display = document.getElementById("chatDisplay");
+      if (s.answer !== lastAnswer) {
+        lastAnswer = s.answer;
+        display.innerHTML = `<strong>Q：</strong>${escapeHTML(question)}\n\n<strong>A：</strong>${escapeHTML(s.answer)}${s.status === "streaming" ? " ▉" : ""}`;
+      }
+      if (s.status === "done" || s.status === "error") {
+        clearInterval(pollingTimer);
+        pollingTimer = null;
+        document.getElementById("sendBtn").disabled = false;
+        if (s.status === "error") {
+          display.innerHTML += `\n\n[错误] ${escapeHTML(s.error || "")}`;
+        }
+        loadHistory();
+      }
+    } catch {
+      // 忽略单次轮询错误
+    }
+  }, 400);
+}
+
+document.getElementById("sendBtn").addEventListener("click", sendQuestion);
+document.getElementById("chatInput").addEventListener("keydown", e => {
+  if (e.ctrlKey && e.key === "Enter") sendQuestion();
+});
+
+document.getElementById("clearHistoryBtn").addEventListener("click", async () => {
+  if (!confirm("清空所有历史对话？")) return;
+  try {
+    const res = await fetchJSON("/api/assistant/conversations/clear", { method: "POST" });
+    showToast(`已清除 ${res.cleared} 条`);
+    loadHistory();
+  } catch (e) {
+    showToast("清空失败：" + e.message, true);
+  }
+});
+
+document.getElementById("previewCtxBtn").addEventListener("click", async () => {
+  const q = document.getElementById("contextInput").value.trim();
+  if (!q) { showToast("请输入要预览的问题", true); return; }
+  const display = document.getElementById("contextDisplay");
+  display.innerHTML = `<span class="placeholder">加载中…</span>`;
+  try {
+    const ctx = await fetchJSON("/api/assistant/context-preview", {
+      method: "POST",
+      body: JSON.stringify({ question: q }),
+    });
+    renderContext(ctx, q);
+  } catch (e) {
+    display.innerHTML = `[预览失败] ${escapeHTML(e.message)}`;
+  }
+});
+
+function renderContext(ctx, q) {
+  const display = document.getElementById("contextDisplay");
+  const histHtml = ctx.chat_history.length === 0
+    ? `<div class="history-empty">无历史</div>`
+    : ctx.chat_history.map(s => `
+        <div class="context-turn">
+          <div><strong>用户：</strong>${escapeHTML(s.question)}</div>
+          <div><strong>助手：</strong>${escapeHTML(s.answer.slice(0, 200))}${s.answer.length > 200 ? "…" : ""}</div>
+        </div>`).join("");
+  const memHtml = !ctx.memory_enabled
+    ? `<div class="history-empty">记忆已关闭</div>`
+    : ctx.memory_items.length === 0
+      ? `<div class="history-empty">无相关记忆</div>`
+      : ctx.memory_items.map(m => `
+          <div class="context-memory">
+            <span class="badge">${escapeHTML(m.kind)}</span>${escapeHTML(m.text.slice(0, 220))}${m.text.length > 220 ? "…" : ""}
+          </div>`).join("");
+  const winSumHtml = !ctx.window_summaries || ctx.window_summaries.length === 0
+    ? `<div class="history-empty">无窗口摘要存档</div>`
+    : ctx.window_summaries.map(w => {
+        const ts = String(w.created_at || "").slice(0, 19).replace("T", " ");
+        const head = `[${escapeHTML(ts)}] ${escapeHTML(w.app_name || "")} · ${escapeHTML(w.window_title || "")}`.replace(/·\s*$/, "");
+        return `<div class="context-memory"><span class="badge">${escapeHTML(w.window_type || "")}</span>${head}<br>${escapeHTML((w.summary || "").slice(0, 220))}${(w.summary || "").length > 220 ? "…" : ""}</div>`;
+      }).join("");
+  const p = ctx.personality;
+  const personaHtml = !p.enabled
+    ? `<span class="badge off">人设未启用</span>`
+    : `<span class="badge on">人设已启用</span> 名字：${escapeHTML(p.name || "—")} | 性格：${escapeHTML(p.traits || "—")} | 风格：${escapeHTML(p.answer_style_hint || "—")}`;
+  const shotBadge = ctx.chat_include_screenshot
+    ? `<span class="badge on">带截图</span>`
+    : `<span class="badge off">纯文本</span>`;
+  display.innerHTML = `
+    <div class="context-block">
+      <h5>当前问题 ${shotBadge}</h5>
+      <div>${escapeHTML(q)}</div>
+    </div>
+    <div class="context-block">
+      <h5>当前窗口分析</h5>
+      <div>${ctx.latest_analysis_present ? escapeHTML(ctx.latest_summary || "—") : "<span class='badge off'>无分析结果</span>"}</div>
+    </div>
+    <div class="context-block">
+      <h5>人设</h5>
+      <div>${personaHtml}</div>
+    </div>
+    <div class="context-block">
+      <h5>历史窗口摘要（${ctx.window_summaries ? ctx.window_summaries.length : 0} 条，设置：${ctx.window_summary_retrieve_count_setting}）</h5>
+      ${winSumHtml}
+    </div>
+    <div class="context-block">
+      <h5>对话历史（${ctx.chat_history.length} 轮，设置：${ctx.chat_history_turns_setting}，messages 多轮结构）</h5>
+      ${histHtml}
+    </div>
+    <div class="context-block">
+      <h5>注入记忆（${ctx.memory_items.length} 条，设置：${ctx.memory_retrieve_count_setting}）</h5>
+      ${memHtml}
+    </div>
+  `;
+}
+</script>
+</body>
+</html>
