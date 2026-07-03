@@ -39,12 +39,12 @@
 
 ### 2.2 页面结构
 
-webui 挂载在 `http://127.0.0.1:18080/`，包含两个页面：
+webui 挂载在 `http://127.0.0.1:18080/webui/`，包含两个 tab：
 
 | 页面 | 路径 | 功能 |
 |------|------|------|
-| 配置页 | `/` | 按 6 个分组（模型/上下文/记忆/性格/观察/运行时）渲染表单，支持在线编辑并写回 `.env` |
-| 对话调试页 | `/`（tab 切换） | 与对话 agent 直接交互，查看流式回答、对话历史、上下文透视 |
+| 配置页 | `/webui/` | 按 6 个分组（模型/上下文/记忆/性格/观察/运行时）渲染表单，支持在线编辑并写回 `.env` |
+| 对话调试页 | `/webui/`（tab 切换） | 与对话 agent 直接交互，查看流式回答、对话历史、上下文透视 |
 
 ### 2.3 配置 API
 
@@ -61,7 +61,11 @@ webui 挂载在 `http://127.0.0.1:18080/`，包含两个页面：
 ```
 update_config → set_key 写 .env
              → reload_settings()        # 清 get_settings 缓存
+             → get_model_runtime_manager.cache_clear()
              → get_vision_model_client.cache_clear()
+             → get_window_summary_store.cache_clear()
+             → get_window_analysis_service.cache_clear()
+             → get_window_watcher_service.cache_clear()
              → get_assistant_chat_service.cache_clear()
              → get_memory_service.cache_clear()
 ```
@@ -270,16 +274,17 @@ def stream_chat(self, *, messages, image_path: Path | None = None) -> Iterator[s
 
 ### 7.2 单元测试
 
-- `test_assistant_chat_service.py::test_chat_question_pauses_streams_and_resume_restarts[asyncio]` **通过**
-  - `FakeVisionClient` 已适配新的 `stream_chat` 接口
+- `python -m pytest -k "not trio" --basetemp D:\AI_Workspace\window\pytest_basetemp_escalated_20260703_1 -p no:cacheprovider` **通过**
+- 结果：`16 passed, 3 deselected, 1 warning`
+- `FakeVisionClient` 已适配新的 `stream_chat` 接口
 - `build_chat_messages` 生成结构正确：system + user（当前问题），历史为空时无多余消息
 - `inspect_context` 返回新字段（window_summaries / chat_include_screenshot / window_summary_retrieve_count_setting）
 - `WindowSummaryStore` history_limit=30 生效
 
 ### 7.3 已知环境性问题（非代码问题）
 
-- `trio` 后端测试失败：环境未安装 trio 模块
-- `test_memory_service` / `test_window_analysis_service` / `test_window_watcher_analysis` 部分用例 ERROR：Windows 临时目录权限 `PermissionError: [WinError 5]`，与本次改动无关
+- 默认沙盒下 `uv` cache / pytest basetemp 可能遇到 Windows 权限错误；非沙盒运行上述命令可通过。
+- `trio` 后端未安装，因此验证命令过滤了 `trio` 参数化用例；当前项目主链路按 `asyncio` 验证。
 
 ---
 

@@ -77,10 +77,9 @@ class WindowSummaryStore:
         return payload
 
     def recent(self, *, limit: int | None = None) -> list[dict[str, Any]]:
-        """返回最近 N 条窗口摘要（新的在前）。"""
+        """返回最近 N 条窗口摘要（旧→新），便于按时间顺序注入 prompt。"""
         items = self._load_raw()
         effective = self.history_limit if limit is None else max(0, min(limit, len(items)))
-        # 倒序取最近 N 条，再翻转为时间正序（旧→新），便于注入 prompt
         recent = items[-effective:] if effective > 0 else []
         return list(recent)
 

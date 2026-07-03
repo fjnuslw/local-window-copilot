@@ -89,16 +89,9 @@ FastAPI 通过 OpenAI-compatible `/v1/chat/completions` 调用本地 server：
 ```json
 {
   "window_type": "ide",
-  "summary": "一句话总结当前窗口。",
+  "summary": "详细描述当前窗口的应用、页面、可见文字、控件、状态和用户可能正在处理的内容。",
   "key_points": ["关键点 1", "关键点 2"],
-  "candidate_questions": [
-    {
-      "question": "用户可能想问的问题",
-      "category": "understand",
-      "reason": "为什么此时适合问",
-      "priority": 0.8
-    }
-  ],
+  "candidate_questions": [],
   "caution": null
 }
 ```
@@ -108,7 +101,7 @@ FastAPI 通过 OpenAI-compatible `/v1/chat/completions` 调用本地 server：
 - 不输出 Markdown。
 - 不声称能点击、输入、提交或操作电脑。
 - 不确定时明确说不确定。
-- 只给建议和解释。
+- 只描述可见内容和关键点，不主动生成候选问题或下一步建议。
 
 ## 当前已验证
 
@@ -121,5 +114,5 @@ FastAPI 通过 OpenAI-compatible `/v1/chat/completions` 调用本地 server：
 
 - 用 20 个真实窗口样本评估摘要质量。
 - 记录延迟、解析失败、误读和不确定场景。
-- 根据样本结果调整 prompt、图片尺寸和候选问题格式。
+- 根据样本结果调整 prompt、图片尺寸、摘要细节和关键点格式。
 - 保持单一模型主链路，避免多路线同时调试。

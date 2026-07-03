@@ -304,15 +304,10 @@ class FloatingAssistantWindow:
         self.latest_analysis: dict[str, object] | None = None
         self.conversation: dict[str, object] | None = None
         self.chat_history: list[dict[str, object]] = []
-        self.custom_question = ""
         self.chat_question = ""
-        self.input_focused = False
         self.chat_input_focused = False
         self.chat_visible = False
         self.button_regions: dict[str, tuple[int, int, int, int]] = {}
-        self.question_regions: list[tuple[tuple[int, int, int, int], str]] = []
-        self.input_region: tuple[int, int, int, int] | None = None
-        self.send_region: tuple[int, int, int, int] | None = None
         self.ask_region: tuple[int, int, int, int] | None = None
         self.resume_region: tuple[int, int, int, int] | None = None
         self.chat_input_region: tuple[int, int, int, int] | None = None
@@ -624,17 +619,7 @@ class FloatingAssistantWindow:
         if msg == WM_KEYDOWN and wparam == VK_ESCAPE:
             user32.DestroyWindow(hwnd)
             return 0
-        if msg == WM_KEYDOWN and wparam == VK_BACK:
-            if self.input_focused and self.custom_question:
-                self.custom_question = self.custom_question[:-1]
-                self.render()
-            return 0
-        if msg == WM_KEYDOWN and wparam == VK_RETURN:
-            if self.input_focused:
-                self._ask_custom_question()
-            return 0
         if msg == WM_CHAR:
-            self._on_char(wparam)
             return 0
         if msg == WM_LBUTTONDOWN:
             self._on_mouse_down(lparam)
@@ -703,21 +688,8 @@ class FloatingAssistantWindow:
         if hit == "ask":
             self._open_chat_window()
             return
-        if hit == "input":
-            self.input_focused = True
-            self.render()
-            return
-        self.input_focused = False
-        if hit == "send":
-            self._ask_custom_question()
-            return
         if hit == "resume":
             self._resume_auto_watch()
-            return
-        if hit and hit.startswith("question:"):
-            index = int(hit.split(":", 1)[1])
-            if 0 <= index < len(self.question_regions):
-                self._ask_question(self.question_regions[index][1])
             return
         if hit in STATES:
             self.set_state(hit, publish=True)
@@ -804,22 +776,10 @@ class FloatingAssistantWindow:
             ax1, ay1, ax2, ay2 = self.ask_region
             if ax1 <= x <= ax2 and ay1 <= y <= ay2:
                 return "ask"
-        if self.input_region is not None:
-            ix1, iy1, ix2, iy2 = self.input_region
-            if ix1 <= x <= ix2 and iy1 <= y <= iy2:
-                return "input"
-        if self.send_region is not None:
-            sx1, sy1, sx2, sy2 = self.send_region
-            if sx1 <= x <= sx2 and sy1 <= y <= sy2:
-                return "send"
         if self.resume_region is not None:
             rx1, ry1, rx2, ry2 = self.resume_region
             if rx1 <= x <= rx2 and ry1 <= y <= ry2:
                 return "resume"
-        for index, (region, _question) in enumerate(self.question_regions):
-            qx1, qy1, qx2, qy2 = region
-            if qx1 <= x <= qx2 and qy1 <= y <= qy2:
-                return f"question:{index}"
 
         if 18 <= x <= CANVAS_WIDTH - 18 and 26 <= y <= 268:
             return "mascot"
@@ -846,18 +806,6 @@ class FloatingAssistantWindow:
             if sb_x1 <= x <= sb_x2 and sb_y1 <= y <= sb_y2:
                 return "scrollbar"
         return "drag" if 0 <= y <= 78 else None
-
-    def _on_char(self, wparam: int) -> None:
-        if not self.input_focused:
-            return
-        if wparam in (VK_BACK, VK_RETURN, VK_ESCAPE):
-            return
-        if wparam < 32:
-            return
-        if len(self.custom_question) >= 120:
-            return
-        self.custom_question += chr(wparam)
-        self.render()
 
     def _on_chat_char(self, wparam: int) -> None:
         if not self.chat_input_focused:
@@ -932,14 +880,6 @@ class FloatingAssistantWindow:
         self.chat_drag_moved = False
         user32.ReleaseCapture()
 
-    def _ask_custom_question(self) -> None:
-        question = self.custom_question.strip()
-        if not question:
-            return
-        self.custom_question = ""
-        self.input_focused = False
-        self._ask_question(question)
-
     def _ask_question(self, question: str) -> None:
         self._open_chat_window()
         self.conversation = {
@@ -991,9 +931,6 @@ class FloatingAssistantWindow:
         if show_panel:
             self._draw_summary_panel(draw)
         else:
-            self.question_regions.clear()
-            self.input_region = None
-            self.send_region = None
             self.ask_region = None
             self.resume_region = None
         self._draw_close_button(draw)
@@ -1051,7 +988,7 @@ class FloatingAssistantWindow:
                 y = self._draw_chat_bubble(draw, speaker, text, y, status=status)
                 y += 8
         else:
-            draw.text((38, msg_top + 18), "点击候选问题，或在下方输入一个问题。", fill=(92, 125, 143, 255), font=self.panel_body_font)
+            draw.text((38, msg_top + 18), "在下方输入问题，开始一次独立对话。", fill=(92, 125, 143, 255), font=self.panel_body_font)
             self.chat_max_scroll = 0
             self.chat_scroll_offset = 0
 
@@ -1408,9 +1345,6 @@ class FloatingAssistantWindow:
         draw.line((x2 - 8, y1 + 8, x1 + 8, y2 - 8), fill=(86, 112, 131, 255), width=2)
 
     def _draw_summary_panel(self, draw: ImageDraw.ImageDraw) -> None:
-        self.question_regions.clear()
-        self.input_region = None
-        self.send_region = None
         self.resume_region = None
 
         x1 = 34
@@ -1483,22 +1417,6 @@ class FloatingAssistantWindow:
             fill=(22, 68, 90, 255),
             font=self.panel_button_font,
         )
-
-    def _draw_question_input(self, draw: ImageDraw.ImageDraw, x1: int, y: int, x2: int) -> None:
-        input_rect = (x1 + 20, y, x2 - 92, y + 38)
-        send_rect = (x2 - 82, y, x2 - 20, y + 38)
-        self.input_region = input_rect
-        self.send_region = send_rect
-
-        outline = (67, 201, 227, 230) if self.input_focused else (206, 229, 237, 230)
-        draw.rounded_rectangle(input_rect, radius=13, fill=(255, 255, 255, 238), outline=outline, width=2)
-        text = self.custom_question or "自定义提问"
-        fill = (20, 58, 78, 255) if self.custom_question else (112, 139, 154, 255)
-        if self.input_focused and (self.frame // 18) % 2 == 0:
-            text = f"{text}|"
-        clipped = self._single_line_text(draw, text, self.panel_small_font, input_rect[2] - input_rect[0] - 24)
-        draw.text((input_rect[0] + 12, input_rect[1] + 8), clipped, fill=fill, font=self.panel_small_font)
-        self._draw_text_button(draw, send_rect, "发送", active=bool(self.custom_question.strip()))
 
     def _draw_text_button(
         self,

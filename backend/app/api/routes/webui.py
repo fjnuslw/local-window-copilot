@@ -9,8 +9,11 @@ from pydantic import BaseModel
 from app.core.config import ENV_FILE_PATH, get_settings, reload_settings
 from app.services.assistant_chat import get_assistant_chat_service
 from app.services.memory import get_memory_service
+from app.services.model_runtime import get_model_runtime_manager
 from app.services.vision_model_client import get_vision_model_client
+from app.services.window_analysis import get_window_analysis_service
 from app.services.window_summary_store import get_window_summary_store
+from app.services.window_watcher import get_window_watcher_service
 
 
 router = APIRouter(prefix="/api/webui", tags=["webui"])
@@ -94,7 +97,11 @@ def _coerce_value(value: Any, field_type: str) -> str:
 def _hot_reload() -> None:
     """清除 settings 及依赖它的服务单例缓存，使新配置立即生效。"""
     reload_settings()
+    get_model_runtime_manager.cache_clear()
     get_vision_model_client.cache_clear()
+    get_window_summary_store.cache_clear()
+    get_window_analysis_service.cache_clear()
+    get_window_watcher_service.cache_clear()
     get_assistant_chat_service.cache_clear()
     get_memory_service.cache_clear()
 

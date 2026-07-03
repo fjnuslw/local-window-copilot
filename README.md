@@ -2,17 +2,18 @@
 
 Windows 本地桌宠式窗口 Copilot 原型。
 
-它通过悬浮机器人观察当前前台窗口，使用本地 FastAPI 服务和本地 MiniCPM-V / llama.cpp 生成轻量摘要、候选问题，并在用户追问时结合最近观察和短期会话记忆回答。
+它通过悬浮机器人观察当前前台窗口，使用本地 FastAPI 服务和本地 MiniCPM-V / llama.cpp 生成轻量摘要；用户追问时打开独立悬浮对话窗，并结合最近观察和短期会话记忆回答。
 
 当前定位：
 
 ```text
 快速感知用户正在做什么
-给出轻量互动提示和候选问题
+给出轻量互动提示
 用户具体提问时，结合当前截图摘要、最近观察和短期记忆回答
 不自动点击、不自动输入、不自动执行电脑操作
 不做 OCR/UIA 主链路
 不做重型规划 Agent
+不要求 Redis / PostgreSQL / Docker
 ```
 
 ## 主链路
@@ -62,6 +63,12 @@ cd D:\AI_Workspace\window
 .\apps\desktop-floating-window\start_desktop_window.cmd
 ```
 
+WebUI 控制台：
+
+```text
+http://127.0.0.1:18080/webui/
+```
+
 ## 接口
 
 ```text
@@ -72,7 +79,14 @@ GET  /api/assistant/latest
 POST /api/assistant/questions
 GET  /api/assistant/conversation
 GET  /api/assistant/conversations
+POST /api/assistant/conversations/clear
+GET  /api/assistant/context-preview
 POST /api/assistant/resume
+GET  /api/webui/config
+PUT  /api/webui/config
+POST /api/webui/reload
+GET  /api/webui/window-summaries
+POST /api/webui/window-summaries/clear
 POST /api/window/capture
 POST /api/window/watch/start
 POST /api/window/watch/stop
