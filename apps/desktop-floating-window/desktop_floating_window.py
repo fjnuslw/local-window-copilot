@@ -42,6 +42,10 @@ CHAT_CANVAS_WIDTH = 660
 CHAT_CANVAS_HEIGHT = 560
 CHAT_WINDOW_WIDTH = CHAT_CANVAS_WIDTH
 CHAT_WINDOW_HEIGHT = CHAT_CANVAS_HEIGHT
+CHAT_CONTEXT_TOP = 98
+CHAT_CONTEXT_HEIGHT = 92
+CHAT_MESSAGE_TOP = CHAT_CONTEXT_TOP + CHAT_CONTEXT_HEIGHT + 14
+CHAT_WHEEL_STEP = 96
 
 STATES = ["idle", "observing", "analyzing", "privacy", "error"]
 STATE_LABELS = {
@@ -69,6 +73,7 @@ OVERLAY_FILES = {
 user32 = ctypes.windll.user32
 gdi32 = ctypes.windll.gdi32
 kernel32 = ctypes.windll.kernel32
+imm32 = ctypes.windll.imm32
 LRESULT = ctypes.c_ssize_t
 HICON = wintypes.HANDLE
 HCURSOR = wintypes.HANDLE
@@ -94,10 +99,14 @@ WM_LBUTTONDOWN = 0x0201
 WM_LBUTTONUP = 0x0202
 WM_MOUSEMOVE = 0x0200
 WM_MOUSEWHEEL = 0x020A
+WM_IME_STARTCOMPOSITION = 0x010D
+WM_IME_COMPOSITION = 0x010F
 
 VK_ESCAPE = 0x1B
 VK_BACK = 0x08
 VK_RETURN = 0x0D
+GCS_RESULTSTR = 0x0800
+CFS_POINT = 0x0002
 WS_POPUP = 0x80000000
 WS_EX_LAYERED = 0x00080000
 WS_EX_TOPMOST = 0x00000008
@@ -155,6 +164,14 @@ gdi32.DeleteDC.argtypes = [HDC]
 
 class POINT(ctypes.Structure):
     _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
+
+
+class COMPOSITIONFORM(ctypes.Structure):
+    _fields_ = [
+        ("dwStyle", wintypes.DWORD),
+        ("ptCurrentPos", POINT),
+        ("rcArea", wintypes.RECT),
+    ]
 
 
 class SIZE(ctypes.Structure):
@@ -237,6 +254,14 @@ gdi32.CreateDIBSection.argtypes = [
     wintypes.DWORD,
 ]
 gdi32.CreateDIBSection.restype = HBITMAP
+imm32.ImmGetContext.argtypes = [wintypes.HWND]
+imm32.ImmGetContext.restype = wintypes.HANDLE
+imm32.ImmReleaseContext.argtypes = [wintypes.HWND, wintypes.HANDLE]
+imm32.ImmReleaseContext.restype = wintypes.BOOL
+imm32.ImmSetCompositionWindow.argtypes = [wintypes.HANDLE, ctypes.POINTER(COMPOSITIONFORM)]
+imm32.ImmSetCompositionWindow.restype = wintypes.BOOL
+imm32.ImmGetCompositionStringW.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+imm32.ImmGetCompositionStringW.restype = wintypes.LONG
 
 
 def signed_lparam_word(value: int) -> int:
@@ -329,6 +354,7 @@ class FloatingAssistantWindow:
         self.chat_scroll_offset = 0
         self.chat_max_scroll = 0
         self.chat_scrollbar_region: tuple[int, int, int, int] | None = None
+        self.chat_scroll_drag: tuple[int, int] | None = None
 
         self._register_class()
         self._create_window()
@@ -406,6 +432,7 @@ class FloatingAssistantWindow:
         if self.chat_hwnd is None:
             return
         self.chat_visible = True
+        self.chat_input_focused = True
         self._chat_auto_scroll = True
         self.last_chat_history_poll = 0.0
         self._poll_chat_history(force=True)
@@ -421,10 +448,14 @@ class FloatingAssistantWindow:
         )
         user32.SetFocus(self.chat_hwnd)
         self.render_chat()
+        self._update_chat_ime_position()
 
-    def _hide_chat_window(self) -> None:
+    def _hide_chat_window(self, *, resume_watch: bool = False) -> None:
+        if resume_watch and self._chat_should_resume_on_exit():
+            self._resume_auto_watch()
         self.chat_visible = False
         self.chat_input_focused = False
+        self.chat_scroll_drag = None
         if self.chat_hwnd is not None:
             user32.ShowWindow(self.chat_hwnd, SW_HIDE)
 
@@ -637,16 +668,20 @@ class FloatingAssistantWindow:
 
     def _handle_chat_message(self, hwnd: int, msg: int, wparam: int, lparam: int) -> int:
         if msg == WM_DESTROY:
+            if self._chat_should_resume_on_exit():
+                self._resume_auto_watch()
             self.chat_hwnd = None
             self.chat_visible = False
+            self.chat_input_focused = False
+            self.chat_scroll_drag = None
             return 0
         if msg == WM_KEYDOWN and wparam == VK_ESCAPE:
-            self._hide_chat_window()
+            self._hide_chat_window(resume_watch=True)
             return 0
         if msg == WM_KEYDOWN and wparam == VK_BACK:
             if self.chat_input_focused and self.chat_question:
                 self.chat_question = self.chat_question[:-1]
-                self._chat_dirty = True
+                self._render_chat_soon(immediate=True)
             return 0
         if msg == WM_KEYDOWN and wparam == VK_RETURN:
             if self.chat_input_focused:
@@ -655,15 +690,17 @@ class FloatingAssistantWindow:
         if msg == WM_CHAR:
             self._on_chat_char(wparam)
             return 0
+        if msg == WM_IME_STARTCOMPOSITION:
+            self._update_chat_ime_position()
+            return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+        if msg == WM_IME_COMPOSITION:
+            if self._on_chat_ime_composition(lparam):
+                return 0
+            self._update_chat_ime_position()
+            return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
         if msg == WM_MOUSEWHEEL:
             wheel_delta = signed_lparam_word((wparam >> 16) & 0xFFFF)
-            if wheel_delta:
-                self.chat_scroll_offset = max(
-                    0,
-                    min(self.chat_scroll_offset - wheel_delta // 40, self.chat_max_scroll),
-                )
-                self._chat_auto_scroll = False
-                self._chat_dirty = True
+            self._scroll_chat_wheel(wheel_delta)
             return 0
         if msg == WM_LBUTTONDOWN:
             self._on_chat_mouse_down(lparam)
@@ -750,14 +787,7 @@ class FloatingAssistantWindow:
         if not (rect.left <= cursor.x <= rect.right and rect.top <= cursor.y <= rect.bottom):
             return
         wheel_delta = signed_lparam_word((wparam >> 16) & 0xFFFF)
-        if wheel_delta == 0:
-            return
-        self.chat_scroll_offset = max(
-            0,
-            min(self.chat_scroll_offset - wheel_delta // 40, self.chat_max_scroll),
-        )
-        self._chat_auto_scroll = False
-        self._chat_dirty = True
+        self._scroll_chat_wheel(wheel_delta)
 
     def _hit_test(self, x: int, y: int) -> str | None:
         if UI_SCALE != 1:
@@ -814,26 +844,98 @@ class FloatingAssistantWindow:
             return
         if wparam < 32:
             return
-        if len(self.chat_question) >= 240:
+        self._append_chat_text(chr(wparam))
+
+    def _on_chat_ime_composition(self, lparam: int) -> bool:
+        if not self.chat_input_focused or self.chat_hwnd is None:
+            return False
+        if not (lparam & GCS_RESULTSTR):
+            return False
+        himc = imm32.ImmGetContext(self.chat_hwnd)
+        if not himc:
+            return False
+        try:
+            byte_len = imm32.ImmGetCompositionStringW(himc, GCS_RESULTSTR, None, 0)
+            if byte_len <= 0:
+                return True
+            char_count = byte_len // ctypes.sizeof(ctypes.c_wchar)
+            buffer = ctypes.create_unicode_buffer(char_count + 1)
+            imm32.ImmGetCompositionStringW(himc, GCS_RESULTSTR, buffer, byte_len)
+            self._append_chat_text(buffer.value)
+            return True
+        finally:
+            imm32.ImmReleaseContext(self.chat_hwnd, himc)
+
+    def _append_chat_text(self, text: str) -> None:
+        if not text:
             return
-        self.chat_question += chr(wparam)
+        remaining = 240 - len(self.chat_question)
+        if remaining <= 0:
+            return
+        self.chat_question += text[:remaining]
+        self._render_chat_soon(immediate=True)
+
+    def _update_chat_ime_position(self) -> None:
+        if self.chat_hwnd is None or self.chat_input_region is None:
+            return
+        himc = imm32.ImmGetContext(self.chat_hwnd)
+        if not himc:
+            return
+        try:
+            x1, y1, x2, y2 = self.chat_input_region
+            form = COMPOSITIONFORM()
+            form.dwStyle = CFS_POINT
+            form.ptCurrentPos = POINT(x1 + 14, y1 + 34)
+            form.rcArea = wintypes.RECT(x1, y1, x2, y2)
+            imm32.ImmSetCompositionWindow(himc, ctypes.byref(form))
+        finally:
+            imm32.ImmReleaseContext(self.chat_hwnd, himc)
+
+    def _render_chat_soon(self, *, immediate: bool = False) -> None:
         self._chat_dirty = True
+        if immediate and self.chat_visible and self.chat_hwnd is not None:
+            self.render_chat()
+            self._chat_dirty = False
+            self._chat_render_skip = 2
+
+    def _set_chat_scroll(self, offset: int) -> None:
+        self.chat_scroll_offset = max(0, min(offset, self.chat_max_scroll))
+        self._chat_auto_scroll = False
+
+    def _scroll_chat_wheel(self, wheel_delta: int) -> None:
+        if wheel_delta == 0 or self.chat_max_scroll <= 0:
+            return
+        pixels = int(round((wheel_delta / 120) * CHAT_WHEEL_STEP))
+        if pixels == 0:
+            pixels = 1 if wheel_delta > 0 else -1
+        self._set_chat_scroll(self.chat_scroll_offset - pixels)
+        self._render_chat_soon(immediate=True)
+
+    def _chat_should_resume_on_exit(self) -> bool:
+        if not isinstance(self.conversation, dict):
+            return False
+        status = str(self.conversation.get("status") or "")
+        return bool(self.conversation.get("resume_required", True)) or status in {"streaming", "done", "error"}
 
     def _on_chat_mouse_down(self, lparam: int) -> None:
         x = signed_lparam_word(lparam)
         y = signed_lparam_word(lparam >> 16)
         hit = self._chat_hit_test(x, y)
+        was_input_focused = self.chat_input_focused
         if self.chat_hwnd is not None:
             user32.SetFocus(self.chat_hwnd)
 
         if hit == "close":
-            self._hide_chat_window()
+            self._hide_chat_window(resume_watch=True)
             return
         if hit == "input":
             self.chat_input_focused = True
-            self._chat_dirty = True
+            self._update_chat_ime_position()
+            self._render_chat_soon(immediate=True)
             return
         self.chat_input_focused = False
+        if was_input_focused:
+            self._render_chat_soon(immediate=True)
         if hit == "send":
             self._ask_chat_question()
             return
@@ -841,6 +943,12 @@ class FloatingAssistantWindow:
             self._resume_auto_watch()
             return
         if hit == "scrollbar":
+            cursor = POINT()
+            user32.GetCursorPos(ctypes.byref(cursor))
+            self.chat_scroll_drag = (cursor.y, self.chat_scroll_offset)
+            self._chat_auto_scroll = False
+            if self.chat_hwnd is not None:
+                user32.SetCapture(self.chat_hwnd)
             return
 
         cursor = POINT()
@@ -853,6 +961,20 @@ class FloatingAssistantWindow:
             user32.SetCapture(self.chat_hwnd)
 
     def _on_chat_mouse_move(self) -> None:
+        if self.chat_scroll_drag is not None:
+            cursor = POINT()
+            user32.GetCursorPos(ctypes.byref(cursor))
+            start_y, start_offset = self.chat_scroll_drag
+            if self.chat_scrollbar_region is not None:
+                _x1, y1, _x2, y2 = self.chat_scrollbar_region
+                track_height = max(1, y2 - y1)
+            else:
+                track_height = 1
+            dy = cursor.y - start_y
+            self._set_chat_scroll(start_offset + int(dy * self.chat_max_scroll / track_height))
+            self._render_chat_soon(immediate=True)
+            return
+
         if self.chat_drag_start is None or self.chat_hwnd is None:
             return
 
@@ -874,6 +996,10 @@ class FloatingAssistantWindow:
         )
 
     def _on_chat_mouse_up(self) -> None:
+        if self.chat_scroll_drag is not None:
+            self.chat_scroll_drag = None
+            user32.ReleaseCapture()
+            return
         if self.chat_drag_start is None:
             return
         self.chat_drag_start = None
@@ -959,14 +1085,16 @@ class FloatingAssistantWindow:
             width=2,
         )
 
-        msg_top = 188
+        msg_top = CHAT_MESSAGE_TOP
         msg_bottom = CHAT_CANVAS_HEIGHT - 92
         visible_height = msg_bottom - msg_top
 
         messages = self._chat_messages()
         total_height = 0
+        message_layer = Image.new("RGBA", (CHAT_CANVAS_WIDTH, visible_height), (0, 0, 0, 0))
+        message_draw = ImageDraw.Draw(message_layer)
         if messages:
-            heights = [self._bubble_height(draw, s, t, st) + 8 for s, t, st in messages]
+            heights = [self._bubble_height(message_draw, s, t, st) + 8 for s, t, st in messages]
             total_height = sum(heights)
             if total_height <= visible_height:
                 self.chat_max_scroll = 0
@@ -978,25 +1106,26 @@ class FloatingAssistantWindow:
                 else:
                     self.chat_scroll_offset = min(self.chat_scroll_offset, self.chat_max_scroll)
 
-            y = msg_top - self.chat_scroll_offset
+            y = -self.chat_scroll_offset
             for i, (speaker, text, status) in enumerate(messages):
-                if y + heights[i] < msg_top:
+                if y + heights[i] < 0:
                     y += heights[i]
                     continue
-                if y >= msg_bottom:
+                if y >= visible_height:
                     break
-                y = self._draw_chat_bubble(draw, speaker, text, y, status=status)
+                y = self._draw_chat_bubble(message_draw, speaker, text, y, status=status)
                 y += 8
         else:
-            draw.text((38, msg_top + 18), "在下方输入问题，开始一次独立对话。", fill=(92, 125, 143, 255), font=self.panel_body_font)
+            message_draw.text((38, 18), "在下方输入问题，开始一次独立对话。", fill=(92, 125, 143, 255), font=self.panel_body_font)
             self.chat_max_scroll = 0
             self.chat_scroll_offset = 0
+        image.alpha_composite(message_layer, (0, msg_top))
 
         draw.rounded_rectangle((28, 28, CHAT_CANVAS_WIDTH - 36, 84), radius=18, fill=(235, 251, 255, 224))
         draw.ellipse((42, 47, 54, 59), fill=hex_to_rgba(color))
         draw.text((66, 35), "对话工作台", fill=(18, 52, 72, 255), font=self.panel_title_font)
         draw.text((66, 63), "基于最近窗口摘要和短期记忆", fill=(73, 106, 126, 255), font=self.panel_small_font)
-        self._draw_chat_context(draw, 104)
+        self._draw_chat_context(draw, CHAT_CONTEXT_TOP)
         self._draw_chat_close_button(draw)
 
         if messages and self.chat_max_scroll > 0:
@@ -1005,6 +1134,8 @@ class FloatingAssistantWindow:
             self.chat_scrollbar_region = None
 
         self._draw_chat_input(draw)
+        if self.chat_input_focused:
+            self._update_chat_ime_position()
         self._update_layered_window(image, hwnd=self.chat_hwnd)
 
     def _draw_chat_close_button(self, draw: ImageDraw.ImageDraw) -> None:
@@ -1018,19 +1149,19 @@ class FloatingAssistantWindow:
         capture = self._capture_payload()
         title = str(capture.get("window_title") or "等待窗口摘要")
         summary = str(analysis.get("summary") or "自动观察线会在这里提供最近窗口摘要。")
-        draw.rounded_rectangle((32, y, CHAT_CANVAS_WIDTH - 40, y + 74), radius=16, fill=(255, 255, 255, 232), outline=(213, 235, 242, 210), width=1)
+        draw.rounded_rectangle((32, y, CHAT_CANVAS_WIDTH - 40, y + CHAT_CONTEXT_HEIGHT), radius=16, fill=(255, 255, 255, 232), outline=(213, 235, 242, 210), width=1)
         draw.text((48, y + 12), self._single_line_text(draw, title, self.panel_small_font, CHAT_CANVAS_WIDTH - 112), fill=(56, 88, 108, 255), font=self.panel_small_font)
         self._draw_wrapped_text(
             draw,
             summary,
-            (48, y + 38),
+            (48, y + 40),
             self.panel_small_font,
             (28, 66, 88, 255),
             CHAT_CANVAS_WIDTH - 112,
             max_lines=2,
             line_gap=4,
         )
-        return y + 74
+        return y + CHAT_CONTEXT_HEIGHT
 
     def _chat_messages(self) -> list[tuple[str, str, str]]:
         messages: list[tuple[str, str, str]] = []
@@ -1128,7 +1259,7 @@ class FloatingAssistantWindow:
             radius=2,
             fill=(120, 180, 200, 220),
         )
-        self.chat_scrollbar_region = (bar_x, bar_top, bar_x + bar_width, bar_bottom)
+        self.chat_scrollbar_region = (bar_x - 10, bar_top, bar_x + bar_width + 10, bar_bottom)
 
     def _draw_chat_input(self, draw: ImageDraw.ImageDraw) -> None:
         y = CHAT_CANVAS_HEIGHT - 74
