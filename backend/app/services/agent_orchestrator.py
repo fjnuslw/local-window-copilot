@@ -16,7 +16,10 @@ from app.services.agent_tools import (
     AgentToolResult,
     AgentToolRuntime,
 )
-from app.services.dialogue_context import build_dialogue_bridge_message
+from app.services.dialogue_context import (
+    build_dialogue_bridge,
+    resolve_effective_question,
+)
 from app.services.local_copilot_identity import mentions_local_copilot
 from app.services.vision_model_client import (
     VisionModelClient,
@@ -90,12 +93,17 @@ class AgentOrchestrator:
         trace: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> AgentPlan:
         settings = get_settings()
-        user_lines = ["用户问题：", question.strip()]
+        bridge = build_dialogue_bridge(question, chat_history)
+        planning_question = resolve_effective_question(
+            question,
+            chat_history,
+            user_image_name=user_image_name,
+        )
+        user_lines = ["用户问题：", planning_question]
+        if bridge is not None:
+            user_lines.extend(["", f"用户原始短回复：{question.strip()}", bridge.message])
         if user_image_name:
             user_lines.extend(["", f"本轮用户附带图片：{user_image_name}"])
-        bridge = build_dialogue_bridge_message(question, chat_history)
-        if bridge:
-            user_lines.extend(["", bridge])
         messages = [
             {"role": "system", "content": TOOL_PLANNER_SYSTEM_PROMPT},
             {"role": "user", "content": "\n".join(user_lines)},
@@ -109,7 +117,7 @@ class AgentOrchestrator:
         )
         if trace is not None:
             trace("planner_raw_response", {"text": raw_text})
-        calls = self._parse_tool_name_plan(raw_text, question)
+        calls = self._parse_tool_name_plan(raw_text, planning_question)
         if trace is not None:
             trace(
                 "planner_parsed",
@@ -223,23 +231,8 @@ def build_tool_answer_messages(
     if packet:
         messages.append({"role": "user", "content": packet})
 
-    result_blocks = []
-    for index, result in enumerate(tool_results, start=1):
-        status = "ok" if result.ok else "error"
-        result_blocks.append(
-            f"[tool_result_{index}]\nstatus: {status}\ncontent:\n{result.content}"
-        )
-    messages.append(
-        {
-            "role": "user",
-            "content": "工具执行结果（这是证据，不要复述工具名）：\n\n"
-            + "\n\n".join(result_blocks),
-        }
-    )
-
-    bridge = build_dialogue_bridge_message(question, chat_history)
-    if bridge:
-        messages.append({"role": "user", "content": bridge})
+    bridge = build_dialogue_bridge(question, chat_history)
+    effective_question = bridge.effective_question if bridge is not None else question.strip()
 
     for session in chat_history:
         q = session.question.strip()
@@ -255,7 +248,31 @@ def build_tool_answer_messages(
                 "role": "assistant",
                 "content": a[: settings.chat_history_answer_max_chars],
             })
-    messages.append({"role": "user", "content": question})
+
+    if bridge is not None:
+        messages.append({"role": "user", "content": bridge.message})
+
+    result_blocks = []
+    for index, result in enumerate(tool_results, start=1):
+        status = "ok" if result.ok else "error"
+        result_blocks.append(
+            f"[tool_result_{index}]\nstatus: {status}\ncontent:\n{result.content}"
+        )
+    messages.append(
+        {
+            "role": "user",
+            "content": "工具执行结果（这是证据，不要复述工具名）：\n\n"
+            + "\n\n".join(result_blocks),
+        }
+    )
+    final_task = (
+        "请基于上面的工具证据直接回答本轮实际任务："
+        f"{effective_question}"
+    )
+    if effective_question != question.strip():
+        final_task += f"\n用户原始输入：{question.strip()}"
+    final_task += "\n不要反问用户是否需要分析，直接给出结论。"
+    messages.append({"role": "user", "content": final_task})
     return messages
 
 
