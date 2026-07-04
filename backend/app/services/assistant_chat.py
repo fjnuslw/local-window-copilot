@@ -96,6 +96,7 @@ class ChatAgent:
             image_name=image_name,
             image_mime=image_mime,
         )
+        self._archive_finished_current()
         await get_window_watcher_service().stop()
         await get_assistant_state_service().set_state(
             "analyzing",
@@ -169,6 +170,12 @@ class ChatAgent:
         retention = get_settings().history_retention_limit
         effective_limit = retention if limit is None else max(0, min(limit, retention))
         return sessions[:effective_limit]
+
+    def _archive_finished_current(self) -> None:
+        current = self.current()
+        if current is None or current.status not in {"done", "error"}:
+            return
+        self._append_history(current)
 
     async def resume_auto_watch(self) -> None:
         self.runtime_store.delete(CHAT_CURRENT_KEY)

@@ -16,6 +16,7 @@ from app.services.agent_tools import (
     AgentToolResult,
     AgentToolRuntime,
 )
+from app.services.dialogue_context import build_dialogue_bridge_message
 from app.services.local_copilot_identity import mentions_local_copilot
 from app.services.vision_model_client import (
     VisionModelClient,
@@ -85,12 +86,16 @@ class AgentOrchestrator:
         *,
         question: str,
         user_image_name: str | None = None,
+        chat_history: list[ChatSession] | None = None,
         trace: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> AgentPlan:
         settings = get_settings()
         user_lines = ["用户问题：", question.strip()]
         if user_image_name:
             user_lines.extend(["", f"本轮用户附带图片：{user_image_name}"])
+        bridge = build_dialogue_bridge_message(question, chat_history)
+        if bridge:
+            user_lines.extend(["", bridge])
         messages = [
             {"role": "system", "content": TOOL_PLANNER_SYSTEM_PROMPT},
             {"role": "user", "content": "\n".join(user_lines)},
@@ -152,6 +157,7 @@ class AgentOrchestrator:
         plan = self.plan(
             question=question,
             user_image_name=context.user_image_name,
+            chat_history=chat_history,
             trace=trace,
         )
         tool_results = self.runtime.execute_many(plan.tool_calls, context)
@@ -230,6 +236,10 @@ def build_tool_answer_messages(
             + "\n\n".join(result_blocks),
         }
     )
+
+    bridge = build_dialogue_bridge_message(question, chat_history)
+    if bridge:
+        messages.append({"role": "user", "content": bridge})
 
     for session in chat_history:
         q = session.question.strip()

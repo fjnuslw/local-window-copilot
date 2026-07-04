@@ -10,7 +10,7 @@ import pytest
 from app.schemas.analyze import WindowAnalysis, WindowAnalysisResult
 from app.schemas.window import RawWindowCapture, WindowBounds
 from app.services import assistant_chat as chat_module
-from app.services.assistant_chat import CHAT_HISTORY_KEY, ChatAgent
+from app.services.assistant_chat import CHAT_CURRENT_KEY, CHAT_HISTORY_KEY, ChatAgent
 
 
 class FakeRuntimeStore:
@@ -171,6 +171,45 @@ async def test_chat_question_pauses_streams_and_resume_restarts(monkeypatch) -> 
     assert watcher.started == 1
     assert service.current() is None
     assert runtime_store.deleted == ["assistant:chat:current"]
+
+
+@pytest.mark.anyio
+async def test_chat_archives_finished_current_before_new_short_reply(monkeypatch) -> None:
+    runtime_store = FakeRuntimeStore()
+    now = datetime.now(UTC)
+    runtime_store.data[CHAT_CURRENT_KEY] = {
+        "session_id": "previous-current",
+        "question": "帮我看看继续问什么比较好",
+        "answer": "要不要我帮你分析当前任务进展或下一步计划？",
+        "status": "done",
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+    }
+    watcher = FakeWatcher()
+    state = FakeStateService()
+    vision = FakeVisionClient()
+    monkeypatch.setattr(chat_module, "get_window_watcher_service", lambda: watcher)
+    monkeypatch.setattr(chat_module, "get_assistant_state_service", lambda: state)
+
+    service = ChatAgent(
+        runtime_store=runtime_store,
+        analysis_service=FakeAnalysisService(),
+        vision_model_client=vision,
+    )
+
+    await service.ask("可以")
+    await asyncio.sleep(0.1)
+
+    history = runtime_store.data[CHAT_HISTORY_KEY]
+    assert isinstance(history, list)
+    assert any(item["session_id"] == "previous-current" for item in history)
+    assert vision.plan_calls
+    planner_prompt = "\n".join(str(m["content"]) for m in vision.plan_calls[-1])
+    assert "对话承接提示" in planner_prompt
+    assert "不要反问同一个问题" in planner_prompt
+    assert vision.calls
+    answer_prompt = "\n".join(str(m["content"]) for m in vision.calls[-1]["messages"])
+    assert "对话承接提示" in answer_prompt
 
 
 @pytest.mark.anyio

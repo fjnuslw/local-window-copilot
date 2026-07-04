@@ -16,6 +16,7 @@ from app.core.config import get_settings
 from app.schemas.analyze import VisionInput, WindowAnalysis
 from app.schemas.chat import ChatSession
 from app.schemas.memory import MemoryItem
+from app.services.dialogue_context import build_dialogue_bridge_message
 from app.services.local_copilot_identity import (
     is_local_copilot_title,
     mentions_local_copilot,
@@ -489,6 +490,10 @@ def build_companion_messages(
                 + "\n".join(lines),
             })
     # [3..] dialogue_tail（多轮历史 + 当前问题，不注入窗口观察）
+    bridge = build_dialogue_bridge_message(question, chat_history)
+    if bridge:
+        messages.append({"role": "user", "content": bridge})
+
     if chat_history:
         for session in chat_history:
             q = session.question.strip()
