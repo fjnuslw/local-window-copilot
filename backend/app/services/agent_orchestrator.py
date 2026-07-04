@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from collections.abc import Callable
@@ -227,6 +227,16 @@ class AgentOrchestrator:
             yield blocking_errors[0]
             return
 
+        direct_visual_answer = _direct_screen_answer(tool_results)
+        if direct_visual_answer is not None:
+            if trace is not None:
+                trace(
+                    "direct_visual_answer",
+                    {"chars": len(direct_visual_answer), "source": "screen.look"},
+                )
+            yield direct_visual_answer
+            return
+
         if not tool_results:
             messages = build_companion_messages(
                 question=question,
@@ -248,6 +258,22 @@ class AgentOrchestrator:
             trace("answer_messages", {"messages": messages})
         yield from self.vision_model_client.stream_chat(messages=messages)
 
+
+def _direct_screen_answer(tool_results: list[AgentToolResult]) -> str | None:
+    if len(tool_results) != 1:
+        return None
+    result = tool_results[0]
+    if result.name != "screen.look" or not result.ok:
+        return None
+    visual_answer = str(result.data.get("visual_answer") or "").strip()
+    if visual_answer:
+        return visual_answer
+    content = result.content.strip()
+    prefix = "屏幕细看结果：\n"
+    if content.startswith(prefix):
+        body = content[len(prefix):].split("\n\n窗口元信息：", 1)[0].strip()
+        return body or None
+    return None
 
 def build_tool_answer_messages(
     *,

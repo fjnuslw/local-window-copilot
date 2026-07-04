@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import re
@@ -284,6 +284,7 @@ class AgentToolRuntime:
                 "window_title": selected.window_title,
                 "window_type": selected.window_type,
                 "crop_reason": crop_reason,
+                "visual_answer": visual_answer,
             },
         )
 
