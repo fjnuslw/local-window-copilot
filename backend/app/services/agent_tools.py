@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import re
@@ -58,6 +58,8 @@ class AgentToolContext:
     history_summaries: list[dict[str, Any]]
     chat_history: list[ChatSession]
     user_goals: list[dict[str, Any]]
+    user_image_path: Path | None = None
+    user_image_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -209,7 +211,7 @@ class AgentToolRuntime:
                 content="screen.look failed: empty question.",
                 user_error="我没拿到要看的问题，不能执行看图。",
             )
-        if context.latest is not None:
+        if context.user_image_path is None and context.latest is not None:
             title = str(getattr(context.latest.capture, "window_title", "") or "")
             observation = getattr(context.latest, "observation", None)
             if is_local_copilot_title(title):
@@ -272,7 +274,7 @@ class AgentToolRuntime:
         return AgentToolResult(
             name=call.name,
             ok=True,
-            content="屏幕细看结果：\n"
+            content="屏幕/图片细看结果：\n"
             + visual_answer
             + "\n\n窗口元信息：\n"
             + "\n".join(meta_lines),
@@ -306,7 +308,7 @@ class AgentToolRuntime:
                 f"- 应用：{context.latest.capture.app_name}\n"
                 f"- 标题：{context.latest.capture.window_title}\n"
                 f"- 类型：{context.latest.analysis.window_type}\n"
-                f"- 摘要：{context.latest.analysis.summary}"
+                f"- 观察：{context.latest.analysis.summary}"
             )
 
         recent_screen_lines: list[str] = []
@@ -415,6 +417,21 @@ class AgentToolRuntime:
         context: AgentToolContext,
     ) -> _SelectedScreen | None:
         candidates: list[tuple[int, _SelectedScreen]] = []
+        if context.user_image_path is not None and context.user_image_path.exists():
+            candidates.append(
+                (
+                    2_000,
+                    _SelectedScreen(
+                        image_id="user_upload",
+                        image_path=context.user_image_path,
+                        app_name="user_upload",
+                        window_title=context.user_image_name or context.user_image_path.name,
+                        window_type="unknown",
+                        source="user_image",
+                        summary="用户本轮上传或粘贴的图片。",
+                    ),
+                )
+            )
         if context.latest is not None and not self._is_invalid_latest(context.latest):
             path = Path(context.latest.capture.screenshot_path)
             if path.exists():

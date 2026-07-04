@@ -223,7 +223,7 @@ def test_window_analysis_service_records_vision_input_metadata(tmp_path) -> None
 
 def test_window_analysis_service_records_screenshot_path_in_summary_store(tmp_path) -> None:
     """WindowSummaryStore 必须保存 screenshot_path / screenshot_hash / window_bounds，
-    以便视觉追问时根据摘要找到对应截图。"""
+    以便视觉追问时根据观察找到对应截图。"""
     from app.services.window_summary_store import WindowSummaryStore
 
     capture = make_capture(tmp_path / "capture.png", screenshot_hash="hash-xyz")

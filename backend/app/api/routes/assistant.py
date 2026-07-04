@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.schemas.assistant import AssistantStateResponse, AssistantStateUpdate
@@ -47,7 +47,15 @@ def latest_analysis() -> WindowAnalysisResult | None:
 
 @router.post("/questions", response_model=ChatSession)
 async def ask_question(payload: ChatQuestionRequest) -> ChatSession:
-    return await get_assistant_chat_service().ask(payload.question)
+    try:
+        return await get_assistant_chat_service().ask(
+            payload.question,
+            image_base64=payload.image_base64,
+            image_name=payload.image_name,
+            image_mime=payload.image_mime,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/conversation", response_model=ChatSession | None)

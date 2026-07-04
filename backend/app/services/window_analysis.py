@@ -20,7 +20,7 @@ from app.services.window_summary_store import (
 
 
 class ObservationAgent:
-    """观察 agent：截图去重 → VLM 详细窗口摘要 → 写 WindowSummaryStore + 记忆。
+    """观察 agent：截图去重 → VLM 详细窗口观察 → 写 WindowSummaryStore + 记忆。
 
     职责边界（见 kv_cache_profile_and_agent_split_spec_zh.md §4.1）：
     - 输入：截图 + ObservationCard

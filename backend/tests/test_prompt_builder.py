@@ -14,7 +14,7 @@ from app.services.profile_store import (
 
 
 def test_base_prefix_stable_across_window_changes() -> None:
-    """窗口摘要变化时 messages[0] (base_prefix) 完全不变。"""
+    """窗口观察变化时 messages[0] (base_prefix) 完全不变。"""
     msgs_a = build_chat_messages(
         question="q1",
         profile_packet="p",
@@ -67,7 +67,7 @@ def test_layered_structure() -> None:
     msgs = build_chat_messages(
         question="当前问题",
         profile_packet="# 助手画像",
-        current_summary="窗口摘要",
+        current_summary="窗口观察",
         current_key_points=["点1"],
     )
     assert msgs[0]["role"] == "system"
@@ -75,7 +75,7 @@ def test_layered_structure() -> None:
     assert msgs[1]["role"] == "user"
     assert msgs[1]["content"] == "# 助手画像"
     assert msgs[2]["role"] == "user"
-    assert "窗口摘要" in msgs[2]["content"]
+    assert "窗口观察" in msgs[2]["content"]
     assert msgs[-1]["role"] == "user"
     assert msgs[-1]["content"] == "当前问题"
 
@@ -99,7 +99,7 @@ def test_empty_context_skipped() -> None:
 
 
 def test_context_packet_contains_all_sections() -> None:
-    """context_packet 包含当前摘要、历史窗口摘要、记忆三部分。"""
+    """context_packet 包含当前观察、历史窗口观察、记忆三部分。"""
     packet = build_context_packet(
         current_summary="当前窗口是IDE",
         current_key_points=["文件A", "文件B"],
@@ -125,7 +125,7 @@ def test_context_packet_puts_current_window_metadata_first() -> None:
     assert packet.startswith("当前窗口元信息")
     assert "- 应用：chrome.exe" in packet
     assert "- 标题：KV Cache Profile/Agent split - Codex" in packet
-    assert packet.index("当前窗口元信息") < packet.index("当前窗口摘要")
+    assert packet.index("当前窗口元信息") < packet.index("当前窗口观察")
 
 
 def test_context_packet_filters_local_copilot_pollution() -> None:

@@ -31,17 +31,17 @@ FIELD_META: list[dict[str, Any]] = [
      "description": "送入模型的截图长边像素。快速省显存，细致可识别更多文字细节。实际写入 LWC_MODEL_IMAGE_LONG_EDGE。"},
     {"key": "analyze_max_tokens", "group": "vision", "label": "分析详细度", "type": "segmented", "advanced": False,
      "options": [{"label": "简洁", "value": 900}, {"label": "标准", "value": 1400}, {"label": "详细", "value": 1800}],
-     "description": "窗口摘要生成的最大 token 数。详细模式摘要更长。实际写入 LWC_ANALYZE_MAX_TOKENS。"},
+     "description": "窗口观察生成的最大 token 数。详细模式观察更长。实际写入 LWC_ANALYZE_MAX_TOKENS。"},
     {"key": "auto_start_window_watch", "group": "vision", "label": "自动观察", "type": "boolean", "advanced": False,
-     "description": "开启后后台自动观察前台窗口并生成摘要。"},
+     "description": "开启后后台自动观察前台窗口并生成观察。"},
     {"key": "window_watch_interval_seconds", "group": "watcher", "label": "自动观察间隔(秒)", "type": "number", "advanced": True,
      "description": "自动观察循环的轮询周期。普通用户通常不需要修改。"},
 
     # --- 上下文（基础页签）---
     {"key": "chat_history_turns", "group": "context", "label": "历史对话轮数", "type": "number", "advanced": False,
      "description": "每次回答时注入的最近对话轮数，用于理解追问。默认 4。"},
-    {"key": "window_summary_retrieve_count", "group": "context", "label": "最近窗口摘要数", "type": "number", "advanced": False,
-     "description": "注入多少条最近窗口摘要作为背景。默认 3。"},
+    {"key": "window_summary_retrieve_count", "group": "context", "label": "最近窗口观察数", "type": "number", "advanced": False,
+     "description": "注入多少条最近窗口观察作为背景。默认 3。"},
     {"key": "memory_enabled", "group": "context", "label": "记忆开关", "type": "boolean", "advanced": False,
      "description": "关闭后不再写入或检索短期记忆。默认开。"},
 
@@ -58,7 +58,7 @@ FIELD_META: list[dict[str, Any]] = [
     {"key": "chat_history_answer_max_chars", "group": "context", "label": "历史回答截断字数", "type": "number", "advanced": True, "description": "注入历史时每条助手回答的最大字符数"},
     {"key": "history_retention_limit", "group": "context", "label": "历史保留条数", "type": "number", "advanced": True, "description": "历史对话列表最多保留多少条，超出则丢弃最旧的"},
     {"key": "chat_include_screenshot", "group": "context", "label": "对话带截图", "type": "boolean", "advanced": True, "description": "开启后对话时仍附带当前截图；关闭则纯文本对话（推荐关闭，职责分离）"},
-    {"key": "window_summary_history_limit", "group": "context", "label": "窗口摘要存档条数", "type": "number", "advanced": True, "description": "识图摘要服务在 SQLite 中保留多少条窗口摘要快照"},
+    {"key": "window_summary_history_limit", "group": "context", "label": "窗口观察存档条数", "type": "number", "advanced": True, "description": "识图观察服务在 SQLite 中保留多少条窗口观察快照"},
 
     # --- 高级：记忆系统 ---
     {"key": "memory_max_items", "group": "memory", "label": "最大记忆条数", "type": "number", "advanced": True, "description": "记忆列表最多保留多少条，超出丢弃最旧的"},
@@ -209,7 +209,7 @@ def reload_config() -> dict[str, Any]:
 
 @router.get("/window-summaries")
 def list_window_summaries(limit: int = 30) -> dict[str, Any]:
-    """返回最近 N 条窗口摘要快照（识图摘要存档）。"""
+    """返回最近 N 条窗口观察快照（识图观察存档）。"""
     store = get_window_summary_store()
     items = store.recent(limit=limit)
     return {"items": items, "count": len(items)}

@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     app_name: str = "Local Window Copilot Backend"
     app_version: str = "0.1.0"
     window_capture_dir: Path = PROJECT_ROOT / "backend" / "data" / "captures"
+    chat_upload_dir: Path = PROJECT_ROOT / "backend" / "data" / "chat_uploads"
+    chat_image_max_bytes: int = 8_000_000
     auto_start_window_watch: bool = True
     window_watch_interval_seconds: float = 1.0
     window_capture_min_interval_seconds: float = 2.0
@@ -32,7 +34,7 @@ class Settings(BaseSettings):
     llama_chat_completions_path: str = "/v1/chat/completions"
     llama_startup_timeout_seconds: float = 45.0
     llama_request_timeout_seconds: float = 120.0
-    model_image_long_edge: int = 1024
+    model_image_long_edge: int = 1536
     visual_answer_image_long_edge: int = 1536
     runtime_store_path: Path = PROJECT_ROOT / "backend" / "data" / "runtime" / "runtime.sqlite3"
     window_analysis_prompt_path: Path = (
@@ -52,7 +54,7 @@ class Settings(BaseSettings):
 
     # --- 模型调用参数（原硬编码于 vision_model_client.py）---
     analyze_temperature: float = 0.1
-    analyze_max_tokens: int = 1800
+    analyze_max_tokens: int = 3200
     answer_temperature: float = 0.2
     answer_max_tokens: int = 1200
     tool_planner_temperature: float = 0.0
@@ -67,7 +69,7 @@ class Settings(BaseSettings):
     history_retention_limit: int = 30
     chat_include_screenshot: bool = False
 
-    # --- 窗口摘要历史（识图摘要存档，供对话 agent 检索）---
+    # --- 窗口观察历史（识图观察存档，供对话 agent 检索）---
     window_summary_history_limit: int = 30
     window_summary_retrieve_count: int = 3
 

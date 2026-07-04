@@ -330,7 +330,7 @@ def build_context_packet(
     memory_items: list[MemoryItem] | None = None,
     memory_item_max_chars: int = 220,
 ) -> str:
-    """构建 context_packet：当前窗口摘要 + 历史窗口摘要 + 记忆。高频变化。"""
+    """构建 context_packet：当前窗口观察 + 历史窗口观察 + 记忆。高频变化。"""
     parts: list[str] = []
     current_meta_lines = []
     if current_app_name:
@@ -347,7 +347,7 @@ def build_context_packet(
         )
     if current_summary:
         kp = "；".join(current_key_points[:6]) if current_key_points else ""
-        block = f"当前窗口摘要：\n{current_summary}"
+        block = f"当前窗口观察：\n{current_summary}"
         if kp:
             block += f"\n关键点：{kp}"
         parts.append(block)
@@ -405,7 +405,7 @@ def build_chat_messages(
         messages[3..]      dialogue_tail       user/assistant 多轮 + 当前问题
 
     base_prefix 完全由 BASE_PREFIX 常量决定，不依赖任何运行时参数，
-    因此窗口摘要/profile/记忆变化时 messages[0] 保持不变。
+    因此窗口观察/profile/记忆变化时 messages[0] 保持不变。
     """
     messages: list[dict[str, Any]] = []
     # [0] system: base_prefix（稳定）
@@ -459,8 +459,8 @@ def build_companion_messages(
         messages[2] user:   <user_goals>      用户最近关心的目标，低噪声陪伴记忆
         messages[3..]      dialogue_tail      user/assistant 多轮 + 当前问题
 
-    与 build_chat_messages 的区别：不注入 context_packet（窗口摘要），
-    陪伴模式优先接住情绪和意图，不把窗口摘要当作答案来源。
+    与 build_chat_messages 的区别：不注入 context_packet（窗口观察），
+    陪伴模式优先接住情绪和意图，不把窗口观察当作答案来源。
     """
     messages: list[dict[str, Any]] = []
     # [0] system: companion_prompt（陪伴人设）
@@ -488,7 +488,7 @@ def build_companion_messages(
                 "content": "用户最近关心的事情（只用于理解语境，不要机械复述）：\n"
                 + "\n".join(lines),
             })
-    # [3..] dialogue_tail（多轮历史 + 当前问题，不注入窗口摘要）
+    # [3..] dialogue_tail（多轮历史 + 当前问题，不注入窗口观察）
     if chat_history:
         for session in chat_history:
             q = session.question.strip()

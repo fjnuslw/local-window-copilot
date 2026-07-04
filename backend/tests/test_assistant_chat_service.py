@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -257,7 +258,7 @@ async def test_chat_visual_question_routes_to_visual_answer(tmp_path, monkeypatc
     runtime_store = FakeRuntimeStore()
     watcher = FakeWatcher()
     state = FakeStateService()
-    vision = FakeVisionClient(_plan(_memory_search("页面里有什么内容？")))
+    vision = FakeVisionClient(_plan(_screen_look("页面里有什么内容？")))
     monkeypatch.setattr(chat_module, "get_window_watcher_service", lambda: watcher)
     monkeypatch.setattr(chat_module, "get_assistant_state_service", lambda: state)
 
@@ -270,9 +271,9 @@ async def test_chat_visual_question_routes_to_visual_answer(tmp_path, monkeypatc
     await service.ask("页面里有什么内容？")
     await asyncio.sleep(0.1)
 
-    assert vision.plan_calls == [], "高置信视觉问题不应依赖小模型 planner"
+    assert vision.plan_calls, "高置信视觉问题不应依赖小模型 planner"
     assert vision.visual_calls, "screen.look 应调用 stream_visual_answer"
-    assert vision.calls == [], "视觉工具结果应直接返回，不再交给 stream_chat 概括"
+    assert vision.calls, "visual tool result should be passed to answer model"
     call = vision.visual_calls[-1]
     assert call["question"] == "页面里有什么内容？"
     assert call["image_path"] == screenshot
@@ -280,26 +281,65 @@ async def test_chat_visual_question_routes_to_visual_answer(tmp_path, monkeypatc
     assert "视觉追问" in call["visual_prompt"] or "视觉" in call["visual_prompt"]
     current = service.current()
     assert current is not None
-    assert current.answer == "视觉回答第一段，视觉回答第二段。"
+    assert current.answer == "第一段，第二段。"
     assert current.status == "done"
     trace_events = [
         payload for name, payload in runtime_store.events
         if name == "assistant:interaction_trace"
     ]
     stages = [event["stage"] for event in trace_events]
-    assert "planner_gate" in stages
+    assert "planner_raw_response" in stages
     assert "planner_parsed" in stages
-    assert "direct_visual_answer" in stages
+    assert "answer_messages" in stages
 
 
 @pytest.mark.anyio
-async def test_chat_specific_content_followup_uses_direct_visual_answer(tmp_path, monkeypatch) -> None:
+async def test_chat_user_image_routes_to_screen_tool(tmp_path, monkeypatch) -> None:
+    upload_dir = tmp_path / "uploads"
+    settings = chat_module.get_settings()
+    monkeypatch.setattr(settings, "chat_upload_dir", upload_dir)
+    monkeypatch.setattr(settings, "chat_image_max_bytes", 1024)
+    runtime_store = FakeRuntimeStore()
+    watcher = FakeWatcher()
+    state = FakeStateService()
+    vision = FakeVisionClient(_plan(_screen_look("这张图里有什么")))
+    monkeypatch.setattr(chat_module, "get_window_watcher_service", lambda: watcher)
+    monkeypatch.setattr(chat_module, "get_assistant_state_service", lambda: state)
+
+    service = ChatAgent(
+        runtime_store=runtime_store,
+        analysis_service=FakeAnalysisService(window_title="AlertWindow"),
+        vision_model_client=vision,
+    )
+
+    encoded = base64.b64encode(b"fake-image").decode("ascii")
+    await service.ask(
+        "这张图里有什么",
+        image_base64=encoded,
+        image_name="clip.png",
+        image_mime="image/png",
+    )
+    await asyncio.sleep(0.1)
+
+    current = service.current()
+    assert current is not None
+    assert current.image_name == "clip.png"
+    assert current.image_path is not None
+    assert Path(current.image_path).exists()
+    assert vision.visual_calls
+    assert vision.visual_calls[-1]["image_path"] == Path(current.image_path)
+    assert vision.calls
+    assert current.answer == "第一段，第二段。"
+
+
+@pytest.mark.anyio
+async def test_chat_specific_content_followup_uses_visual_tool_then_answer_model(tmp_path, monkeypatch) -> None:
     screenshot = tmp_path / "capture.png"
     screenshot.write_bytes(b"fake-image")
     runtime_store = FakeRuntimeStore()
     watcher = FakeWatcher()
     state = FakeStateService()
-    vision = FakeVisionClient(_plan(_memory_search("里面有什么具体内容呢")))
+    vision = FakeVisionClient(_plan(_screen_look("里面有什么具体内容呢")))
     monkeypatch.setattr(chat_module, "get_window_watcher_service", lambda: watcher)
     monkeypatch.setattr(chat_module, "get_assistant_state_service", lambda: state)
 
@@ -312,17 +352,17 @@ async def test_chat_specific_content_followup_uses_direct_visual_answer(tmp_path
     await service.ask("里面有什么具体内容呢")
     await asyncio.sleep(0.1)
 
-    assert vision.plan_calls == []
+    assert vision.plan_calls
     assert vision.visual_calls
-    assert vision.calls == []
+    assert vision.calls
     current = service.current()
     assert current is not None
-    assert current.answer == "视觉回答第一段，视觉回答第二段。"
+    assert current.answer == "第一段，第二段。"
     stages = [
         payload["stage"] for name, payload in runtime_store.events
         if name == "assistant:interaction_trace"
     ]
-    assert "direct_visual_answer" in stages
+    assert "answer_messages" in stages
 
 @pytest.mark.anyio
 async def test_chat_accepts_prefixed_planner_tool_name(tmp_path, monkeypatch) -> None:
@@ -346,10 +386,10 @@ async def test_chat_accepts_prefixed_planner_tool_name(tmp_path, monkeypatch) ->
 
     assert vision.plan_calls, "非高置信视觉问题应仍先经过 planner"
     assert vision.visual_calls, "解析出 screen.look 后应执行视觉工具"
-    assert vision.calls == []
+    assert vision.calls
     current = service.current()
     assert current is not None
-    assert current.answer == "视觉回答第一段，视觉回答第二段。"
+    assert current.answer == "第一段，第二段。"
     assert current.status == "done"
 
 @pytest.mark.anyio
@@ -401,7 +441,7 @@ async def test_chat_visual_question_requires_available_screenshot(
 
     assert vision.calls == [], "缺少截图时不应调用 stream_chat"
     assert vision.visual_calls == []
-    assert vision.plan_calls == []
+    assert vision.plan_calls
     current = service.current()
     assert current is not None
     assert "没有可用的目标窗口截图" in current.answer
@@ -410,7 +450,7 @@ async def test_chat_visual_question_requires_available_screenshot(
 
 @pytest.mark.anyio
 async def test_chat_companion_question_routes_to_companion_mode(monkeypatch) -> None:
-    """陪伴类问题（如"我觉得不对"）应走 companion 模式，不注入窗口摘要。"""
+    """陪伴类问题（如"我觉得不对"）应走 companion 模式，不注入窗口观察。"""
     runtime_store = FakeRuntimeStore()
     watcher = FakeWatcher()
     state = FakeStateService()
@@ -432,8 +472,8 @@ async def test_chat_companion_question_routes_to_companion_mode(monkeypatch) -> 
     assert vision.visual_calls == [], "陪伴问题不应调用 stream_visual_answer"
     messages = vision.calls[-1]["messages"]
     joined = "\n".join(str(m["content"]) for m in messages)
-    # companion 模式不注入窗口摘要
-    assert "当前窗口摘要" not in joined
+    # companion 模式不注入窗口观察
+    assert "当前窗口观察" not in joined
     assert "当前窗口元信息" not in joined
     # companion 模式使用 companion prompt 作为 system 消息
     assert "桌面伙伴" in str(messages[0]["content"]) or "陪伴" in str(messages[0]["content"])
@@ -498,22 +538,22 @@ async def test_chat_screen_request_uses_registered_screen_tool(tmp_path, monkeyp
     await service.ask("帮我分析一下当前页面")
     await asyncio.sleep(0.1)
 
-    assert vision.plan_calls == [], "高置信视觉问题不应依赖小模型 planner"
+    assert vision.plan_calls, "高置信视觉问题不应依赖小模型 planner"
     assert vision.visual_calls, "screen.look 应执行视觉细看"
-    assert vision.calls == [], "视觉工具结果应直接返回，不再交给 stream_chat 概括"
+    assert vision.calls, "visual tool result should be passed to answer model"
     assert vision.visual_calls[-1]["image_long_edge"] == 1536
     current = service.current()
     assert current is not None
-    assert current.answer == "视觉回答第一段，视觉回答第二段。"
+    assert current.answer == "第一段，第二段。"
     trace_events = [
         payload for name, payload in runtime_store.events
         if name == "assistant:interaction_trace"
     ]
     stages = [event["stage"] for event in trace_events]
-    assert "planner_gate" in stages
+    assert "planner_raw_response" in stages
     assert "planner_parsed" in stages
     assert "tool_results" in stages
-    assert "direct_visual_answer" in stages
+    assert "answer_messages" in stages
     assert "session_finished" in stages
 
 

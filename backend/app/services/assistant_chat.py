@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import json
 import uuid
 from datetime import UTC, datetime
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from app.core.config import get_settings
@@ -47,10 +50,17 @@ CHAT_HISTORY_KEY = "assistant:chat:history"
 # 用户最近目标和困惑（spec §6.2：记录用户真正关心的目标、反复犹豫的判断）
 COMPANION_GOALS_KEY = "companion:user_goals"
 COMPANION_GOALS_LIMIT = 10
+CHAT_IMAGE_MIME_EXTENSIONS = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/webp": ".webp",
+    "image/bmp": ".bmp",
+}
 
 
 class ChatAgent:
-    """对话 agent：读取 profile/摘要/记忆，构造 KV cache 友好的分层 messages，流式回答。
+    """对话 agent：读取 profile/观察/记忆，构造 KV cache 友好的分层 messages，流式回答。
 
     职责边界（见 kv_cache_profile_and_agent_split_spec_zh.md §4.2）：
     - 输入：question + profile_packet + context_packet + dialogue_tail
@@ -73,7 +83,19 @@ class ChatAgent:
         self.memory_service = memory_service
         self.window_summary_store = window_summary_store
 
-    async def ask(self, question: str) -> ChatSession:
+    async def ask(
+        self,
+        question: str,
+        *,
+        image_base64: str | None = None,
+        image_name: str | None = None,
+        image_mime: str | None = None,
+    ) -> ChatSession:
+        user_image_path, stored_image_name = self._save_user_image(
+            image_base64=image_base64,
+            image_name=image_name,
+            image_mime=image_mime,
+        )
         await get_window_watcher_service().stop()
         await get_assistant_state_service().set_state(
             "analyzing",
@@ -83,12 +105,51 @@ class ChatAgent:
         session = ChatSession(
             session_id=uuid.uuid4().hex,
             question=question.strip(),
+            image_path=str(user_image_path) if user_image_path is not None else None,
+            image_name=stored_image_name,
             created_at=now,
             updated_at=now,
         )
         self._save(session)
         asyncio.create_task(self._answer(session), name="assistant-chat-answer")
         return session
+
+    def _save_user_image(
+        self,
+        *,
+        image_base64: str | None,
+        image_name: str | None,
+        image_mime: str | None,
+    ) -> tuple[Path | None, str | None]:
+        if not image_base64:
+            return None, None
+
+        settings = get_settings()
+        raw = image_base64.strip()
+        mime = (image_mime or "").strip().lower()
+        if raw.lower().startswith("data:") and "," in raw:
+            header, raw = raw.split(",", 1)
+            header_mime = header[5:].split(";", 1)[0].strip().lower()
+            mime = mime or header_mime
+        mime = mime or "image/png"
+        ext = CHAT_IMAGE_MIME_EXTENSIONS.get(mime)
+        if ext is None:
+            raise ValueError(f"Unsupported image type: {mime}")
+        try:
+            data = base64.b64decode(raw, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("Image data is not valid base64.") from exc
+        if not data:
+            raise ValueError("Image data is empty.")
+        if len(data) > settings.chat_image_max_bytes:
+            mb = settings.chat_image_max_bytes / 1024 / 1024
+            raise ValueError(f"Image is too large. Limit: {mb:.1f} MB.")
+
+        settings.chat_upload_dir.mkdir(parents=True, exist_ok=True)
+        target = settings.chat_upload_dir / f"{uuid.uuid4().hex}{ext}"
+        target.write_bytes(data)
+        display_name = Path(image_name or target.name).name[:160] or target.name
+        return target, display_name
 
     def current(self) -> ChatSession | None:
         data = self.runtime_store.get_json(CHAT_CURRENT_KEY)
@@ -127,6 +188,11 @@ class ChatAgent:
                 {
                     "question": session.question,
                     "latest_present": latest is not None,
+                    "user_image": (
+                        {"path": session.image_path, "name": session.image_name}
+                        if session.image_path
+                        else None
+                    ),
                     "latest_window": (
                         {
                             "app_name": latest.capture.app_name,
@@ -191,6 +257,8 @@ class ChatAgent:
             history_summaries=history_summaries,
             chat_history=chat_history,
             user_goals=self._get_user_goals(),
+            user_image_path=Path(session.image_path) if session.image_path else None,
+            user_image_name=session.image_name,
         )
         self._trace(
             session,
@@ -432,7 +500,7 @@ class ChatAgent:
             "usage_percent": usage_percent,
         }
 
-        # 情境状态（spec §6.3 / §8.2）：替代"直接展示摘要"的产品层
+        # 情境状态（spec §6.3 / §8.2）：替代"直接展示观察"的产品层
         situation = build_situation(
             chat_history=chat_history,
             recent_window_summaries=history_summaries,

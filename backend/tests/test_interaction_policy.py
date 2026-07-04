@@ -207,14 +207,14 @@ def test_reset_clears_cooldown() -> None:
     assert "方向" in line3
 
 
-# ---------- 不把屏幕摘要作为主动提示内容 ----------
+# ---------- 不把屏幕观察作为主动提示内容 ----------
 
 
 def test_proactive_line_is_not_window_summary() -> None:
-    """主动提示内容应来自 SituationBuilder 的 companion_line，不是窗口摘要。
+    """主动提示内容应来自 SituationBuilder 的 companion_line，不是窗口观察。
 
     这条规则由 SituationBuilder 保证 companion_line 是陪伴式短句，
-    InteractionPolicy 只透传，不做摘要注入。这里验证透传正确。
+    InteractionPolicy 只透传，不做观察注入。这里验证透传正确。
     """
     policy = _make_policy(datetime(2026, 7, 4, 12, 0, 0))
     companion_line = "要不要我陪你拆一下？"

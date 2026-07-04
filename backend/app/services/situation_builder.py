@@ -1,10 +1,10 @@
-"""Situation Builder：构建情境状态，替代"直接展示摘要"的产品层。
+"""Situation Builder：构建情境状态，替代"直接展示观察"的产品层。
 
 职责边界（见 ambient_companion_product_spec_zh.md §6.3 / §8.2）：
 - 输入：最近对话、最近窗口类型和变化、用户 profile、记忆。
 - 输出：situation_label / user_mood_hint / likely_intent / interrupt_policy / companion_line。
 - 不调用模型，纯本地规则匹配。
-- 情境状态比窗口摘要更重要——摘要降级为内部索引。
+- 情境状态比窗口观察更重要——观察降级为内部索引。
 """
 from __future__ import annotations
 

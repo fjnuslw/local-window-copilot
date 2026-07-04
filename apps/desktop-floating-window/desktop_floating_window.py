@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import ctypes
+import io
 import json
 import math
 import sys
@@ -11,7 +13,7 @@ from pathlib import Path
 from typing import Callable
 from urllib import error, request
 
-from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageGrab
 
 
 if not sys.platform.startswith("win"):
@@ -100,6 +102,8 @@ WM_IME_COMPOSITION = 0x010F
 VK_ESCAPE = 0x1B
 VK_BACK = 0x08
 VK_RETURN = 0x0D
+VK_CONTROL = 0x11
+VK_V = 0x56
 GCS_RESULTSTR = 0x0800
 CFS_POINT = 0x0002
 WS_POPUP = 0x80000000
@@ -143,6 +147,8 @@ user32.SetTimer.argtypes = [wintypes.HWND, UINT_PTR, wintypes.UINT, ctypes.c_voi
 user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
 user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
 user32.SetFocus.argtypes = [wintypes.HWND]
+user32.GetKeyState.argtypes = [ctypes.c_int]
+user32.GetKeyState.restype = ctypes.c_short
 user32.SetCapture.argtypes = [wintypes.HWND]
 user32.ReleaseCapture.argtypes = []
 user32.DestroyWindow.argtypes = [wintypes.HWND]
@@ -337,6 +343,9 @@ class FloatingAssistantWindow:
         self.chat_context_status: dict[str, object] | None = None
         self.chat_history: list[dict[str, object]] = []
         self.chat_question = ""
+        self.chat_image_base64: str | None = None
+        self.chat_image_name: str | None = None
+        self.chat_image_mime: str | None = None
         self.chat_input_focused = False
         self.chat_visible = False
         self.button_regions: dict[str, tuple[int, int, int, int]] = {}
@@ -655,8 +664,8 @@ class FloatingAssistantWindow:
             return None
 
     def _should_show_panel(self) -> bool:
-        # Ambient Companion：主窗只承担存在感和入口，不再默认展示摘要面板。
-        # 始终显示轻量入口按钮，摘要内容移入对话工作台和 Work Lens。
+        # Ambient Companion：主窗只承担存在感和入口，不再默认展示观察面板。
+        # 始终显示轻量入口按钮，观察内容移入对话工作台和 Work Lens。
         return True
 
     def _handle_message(self, hwnd: int, msg: int, wparam: int, lparam: int) -> int:
@@ -711,6 +720,10 @@ class FloatingAssistantWindow:
         if msg == WM_KEYDOWN and wparam == VK_ESCAPE:
             self._hide_chat_window()
             return 0
+        if msg == WM_KEYDOWN and wparam == VK_V and self.chat_input_focused:
+            if user32.GetKeyState(VK_CONTROL) & 0x8000:
+                if self._paste_chat_image():
+                    return 0
         if msg == WM_KEYDOWN and wparam == VK_BACK:
             if self.chat_input_focused and self.chat_question:
                 self.chat_question = self.chat_question[:-1]
@@ -908,6 +921,52 @@ class FloatingAssistantWindow:
         self.chat_question += text[:remaining]
         self._render_chat_soon(immediate=True)
 
+    def _paste_chat_image(self) -> bool:
+        try:
+            data = ImageGrab.grabclipboard()
+        except Exception:
+            return False
+        if isinstance(data, Image.Image):
+            output = io.BytesIO()
+            data.convert("RGBA").save(output, format="PNG")
+            self.chat_image_base64 = base64.b64encode(output.getvalue()).decode("ascii")
+            self.chat_image_name = "clipboard.png"
+            self.chat_image_mime = "image/png"
+            self._render_chat_soon(immediate=True)
+            return True
+        if isinstance(data, (list, tuple)):
+            mime_by_suffix = {
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".webp": "image/webp",
+                ".bmp": "image/bmp",
+            }
+            for item in data:
+                path = Path(str(item))
+                mime = mime_by_suffix.get(path.suffix.lower())
+                if mime and path.exists() and path.is_file():
+                    self.chat_image_base64 = base64.b64encode(path.read_bytes()).decode("ascii")
+                    self.chat_image_name = path.name
+                    self.chat_image_mime = mime
+                    self._render_chat_soon(immediate=True)
+                    return True
+        return False
+
+    def _chat_image_payload(self) -> dict[str, str] | None:
+        if not self.chat_image_base64:
+            return None
+        return {
+            "image_base64": self.chat_image_base64,
+            "image_name": self.chat_image_name or "clipboard.png",
+            "image_mime": self.chat_image_mime or "image/png",
+        }
+
+    def _clear_chat_image(self) -> None:
+        self.chat_image_base64 = None
+        self.chat_image_name = None
+        self.chat_image_mime = None
+
     def _update_chat_ime_position(self) -> None:
         if self.chat_hwnd is None or self.chat_input_region is None:
             return
@@ -1033,7 +1092,7 @@ class FloatingAssistantWindow:
         self.chat_drag_moved = False
         user32.ReleaseCapture()
 
-    def _ask_question(self, question: str) -> None:
+    def _ask_question(self, question: str, image_payload: dict[str, str] | None = None) -> None:
         self._open_chat_window()
         self.conversation = {
             "question": question,
@@ -1041,13 +1100,18 @@ class FloatingAssistantWindow:
             "status": "streaming",
             "resume_required": True,
         }
+        if image_payload is not None:
+            self.conversation["image_name"] = image_payload.get("image_name")
         self._last_conversation_status = "streaming"
         self.set_state("analyzing")
+        payload: dict[str, object] = {"question": question}
+        if image_payload is not None:
+            payload.update(image_payload)
         self._request_json_async(
             "ask-question",
             "POST",
             "/api/assistant/questions",
-            {"question": question},
+            payload,
             on_success=self._apply_conversation,
         )
         self.render()
@@ -1086,11 +1150,15 @@ class FloatingAssistantWindow:
 
     def _ask_chat_question(self) -> None:
         question = self.chat_question.strip()
+        image_payload = self._chat_image_payload()
+        if not question and image_payload is not None:
+            question = "请看这张图"
         if not question:
             return
         self.chat_question = ""
+        self._clear_chat_image()
         self.chat_input_focused = False
-        self._ask_question(question)
+        self._ask_question(question, image_payload=image_payload)
 
     def render(self) -> None:
         show_panel = self._should_show_panel()
@@ -1193,7 +1261,7 @@ class FloatingAssistantWindow:
         draw.line((x2 - 8, y1 + 8, x1 + 8, y2 - 8), fill=(72, 102, 120, 255), width=2)
 
     def _draw_chat_context(self, draw: ImageDraw.ImageDraw, y: int) -> int:
-        """上下文状态卡：对齐 WebUI 的 context usage 口径，不展示窗口摘要。"""
+        """上下文状态卡：对齐 WebUI 的 context usage 口径，不展示窗口观察。"""
         draw.rounded_rectangle(
             (32, y, CHAT_CANVAS_WIDTH - 40, y + CHAT_CONTEXT_HEIGHT),
             radius=16,
@@ -1243,7 +1311,7 @@ class FloatingAssistantWindow:
         )
         draw.text((48, y + 49), model_text, fill=(28, 66, 88, 255), font=self.panel_small_font)
 
-        stats = f"工具 {tool_count} · 历史 {dialogue_turns} · 记忆 {memory_count} · 摘要 {recent_count}"
+        stats = f"工具 {tool_count} · 历史 {dialogue_turns} · 记忆 {memory_count} · 观察 {recent_count}"
         clipped_stats = self._single_line_text(draw, stats, self.panel_small_font, 204)
         draw.text((410, y + 8), clipped_stats, fill=(73, 106, 126, 255), font=self.panel_small_font)
         return y + CHAT_CONTEXT_HEIGHT
@@ -1358,13 +1426,19 @@ class FloatingAssistantWindow:
         self.chat_resume_region = resume_rect
         outline = (67, 201, 227, 230) if self.chat_input_focused else (206, 229, 237, 230)
         draw.rounded_rectangle(input_rect, radius=15, fill=(255, 255, 255, 242), outline=outline, width=2)
-        text = self.chat_question or "继续提问"
+        has_image = bool(self.chat_image_base64)
+        text = self.chat_question or ("已附图，继续提问" if has_image else "继续提问")
         fill = (20, 58, 78, 255) if self.chat_question else (112, 139, 154, 255)
         if self.chat_input_focused and (self.frame // 18) % 2 == 0:
             text = f"{text}|"
-        clipped = self._single_line_text(draw, text, self.panel_small_font, input_rect[2] - input_rect[0] - 26)
+        text_width = input_rect[2] - input_rect[0] - (86 if has_image else 26)
+        clipped = self._single_line_text(draw, text, self.panel_small_font, text_width)
         draw.text((input_rect[0] + 13, input_rect[1] + 10), clipped, fill=fill, font=self.panel_small_font)
-        self._draw_text_button(draw, send_rect, "发送", active=bool(self.chat_question.strip()))
+        if has_image:
+            badge = (input_rect[2] - 64, input_rect[1] + 8, input_rect[2] - 14, input_rect[1] + 34)
+            draw.rounded_rectangle(badge, radius=10, fill=(216, 249, 255, 245), outline=(91, 210, 235, 190), width=1)
+            draw.text((badge[0] + 12, badge[1] + 3), "图", fill=(19, 70, 91, 255), font=self.panel_small_font)
+        self._draw_text_button(draw, send_rect, "发送", active=bool(self.chat_question.strip() or has_image))
         self._draw_text_button(draw, resume_rect, "观察", active=True)
 
     def _render_mascot(self, t: float) -> Image.Image:
@@ -1548,9 +1622,9 @@ class FloatingAssistantWindow:
         draw.line((x2 - 8, y1 + 8, x1 + 8, y2 - 8), fill=(86, 112, 131, 255), width=2)
 
     def _draw_summary_panel(self, draw: ImageDraw.ImageDraw) -> None:
-        """Ambient Companion 入口面板：只承担存在感和入口按钮，不展示窗口摘要。
+        """Ambient Companion 入口面板：只承担存在感和入口按钮，不展示窗口观察。
 
-        摘要内容移入对话工作台和 Work Lens，主窗保持安静。
+        观察内容移入对话工作台和 Work Lens，主窗保持安静。
         """
         self.resume_region = None
 

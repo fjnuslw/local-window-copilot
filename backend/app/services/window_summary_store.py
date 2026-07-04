@@ -1,8 +1,8 @@
-"""窗口摘要历史存储：每次识图分析存档，供对话 agent 检索。
+"""窗口观察索引历史存储：每次识图分析存档，供对话 agent 检索。
 
 与 memory.py 的区别：
-- memory.py 存"记忆条目"（观察/分析摘要/问答），基于关键字检索，作用域 session
-- 本模块专存"窗口摘要快照"，按时间倒序，供对话 agent 了解最近看过哪些窗口
+- memory.py 存"记忆条目"（观察/分析观察/问答），基于关键字检索，作用域 session
+- 本模块专存"窗口观察快照"，按时间倒序，供对话 agent 了解最近看过哪些窗口
 
 每条记录可追溯到截图文件（screenshot_path / screenshot_hash），便于视觉追问时重新看图。
 """
@@ -24,7 +24,7 @@ WINDOW_SUMMARIES_KEY = "window:summaries"
 
 
 class WindowSummaryRecord:
-    """一条窗口摘要快照（dict 结构，避免引入新 schema）。
+    """一条窗口观察快照（dict 结构，避免引入新 schema）。
 
     必须包含 screenshot_path / screenshot_hash，以便视觉追问时追溯到截图。
     """
@@ -82,7 +82,7 @@ class WindowSummaryStore:
         capture: RawWindowCapture | None = None,
         vision_input: VisionInput | None = None,
     ) -> dict[str, Any]:
-        """记录一次窗口分析摘要，同时保存截图路径与视觉输入元信息以便追溯。"""
+        """记录一次窗口分析观察，同时保存截图路径与视觉输入元信息以便追溯。"""
         payload: dict[str, Any] = {
             "record_id": uuid.uuid4().hex,
             "created_at": datetime.now(UTC).isoformat(),
@@ -108,7 +108,7 @@ class WindowSummaryStore:
         return payload
 
     def recent(self, *, limit: int | None = None) -> list[dict[str, Any]]:
-        """返回最近 N 条窗口摘要（旧→新），便于按时间顺序注入 prompt。"""
+        """返回最近 N 条窗口观察（旧→新），便于按时间顺序注入 prompt。"""
         items = self._load_raw()
         effective = self.history_limit if limit is None else max(0, min(limit, len(items)))
         recent = items[-effective:] if effective > 0 else []

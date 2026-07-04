@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Iterator
 
 from app.core.config import get_settings
@@ -24,83 +24,42 @@ from app.services.vision_model_client import (
 
 
 TOOL_PLANNER_SYSTEM_PROMPT = """你是本地桌面伙伴的工具规划器。
-你只负责选择工具，不负责回答用户。
+你只负责判断是否需要工具，不负责回答用户。
 
-输出必须只是一行工具名，四选一：
+可用工具只有：
 screen.look
 memory.search
 memory.remember
 none
 
-原则：
-- 工具列表之外的工具一律不能使用。
-- 用户想让你看屏幕、看页面、看窗口、看截图、读可见文字、分析界面细节时，调用 screen.look。
-- 用户问过去聊过什么、用户偏好、项目方向、已有记忆、上下文背景时，调用 memory.search。
-- 只有用户明确说“记住/以后记得/保存这个偏好”时，调用 memory.remember。
-- 普通陪伴、情绪回应、闲聊，不调用工具，输出 none。
-- 如果用户已经指向当前屏幕，不要反问“你想看什么”，直接调用 screen.look。
-- 不要输出解释、Markdown、JSON 或自然语言，只输出一个工具名。"""
+输出要求：
+- 优先只输出一行工具名，例如：screen.look
+- 也可以输出 JSON：{"tool":"screen.look"}
+- 不要输出解释、Markdown、步骤名或自然语言。
+
+判断原则：
+- 用户要求看屏幕、页面、窗口、截图、图片、可见文字、界面细节、画面里的选项，选 screen.look。
+- 用户问过去说过什么、偏好、已有记忆、项目背景、历史窗口记录，选 memory.search。
+- 只有用户明确说“记住/以后记得/保存这个偏好”时，选 memory.remember。
+- 普通陪伴、情绪回应、想法讨论、无需外部上下文的问题，选 none。
+- 如果本轮用户附带了图片，并且问题与这张图有关，选 screen.look。
+- 如果不确定是否需要看图，不要用模板反问；根据用户意图自由选择最有帮助的工具。
+"""
 
 
 TOOL_ANSWER_SYSTEM_PROMPT = """你是用户的本地桌面伙伴。
-你会收到工具结果，然后直接回答用户。
+你会收到工具执行结果，然后直接回答用户。
 
 原则：
 - 工具已经执行过，不要再要求用户说明“想看什么”。
-- 如果 screen.look 返回了屏幕细看结果，优先基于它回答。
+- 如果 screen.look 返回了屏幕/图片细看结果，把它当作视觉证据；你负责理解、取舍和回答。
+- 如果用户问“推荐哪个/哪个好看/选哪个/怎么排”，必须给出明确选择和理由；不要只描述页面。
+- 如果用户问具体文字或细节，优先列出能看清的原文、标题、按钮、数字或位置。
 - 如果工具结果说看不清，就明确说看不清，不编造。
 - 不要输出 JSON、日志、工具名或接口名。
 - 不要声称能自动点击、输入或操作电脑。
-- 用中文，自然、简洁、有温度。"""
-
-
-VISUAL_REGION_HINTS = (
-    "左侧",
-    "左边",
-    "右侧",
-    "右边",
-    "上方",
-    "上面",
-    "顶部",
-    "底部",
-    "下方",
-    "下面",
-    "中间",
-    "中部",
-    "中央",
-)
-VISUAL_TARGET_HINTS = (
-    "页面",
-    "屏幕",
-    "截图",
-    "图里",
-    "画面",
-    "代码",
-    "文字",
-    "按钮",
-    "区域",
-    "面板",
-    "菜单",
-    "输入框",
-    "图标",
-    "列表",
-    "内容",
-)
-VISUAL_ACTION_HINTS = (
-    "看",
-    "识别",
-    "读",
-    "描述",
-    "分析",
-    "显示",
-    "写了什么",
-    "有什么",
-    "是什么",
-    "具体",
-)
-WINDOW_METADATA_HINTS = ("名字", "标题", "叫什么")
-REMEMBER_HINTS = ("记住", "记一下", "以后记得", "保存这个偏好")
-REMEMBER_NEGATIONS = ("不要记住", "不用记住", "别记住")
+- 用中文，自然、简洁、有温度。
+"""
 
 
 @dataclass(frozen=True)
@@ -125,29 +84,16 @@ class AgentOrchestrator:
         self,
         *,
         question: str,
+        user_image_name: str | None = None,
         trace: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> AgentPlan:
-        forced_tool = _forced_tool_for_question(question)
-        if forced_tool is not None:
-            if trace is not None:
-                trace("planner_gate", {"tool": forced_tool})
-            calls = self._parse_tool_name_plan(forced_tool, question)
-            if trace is not None:
-                trace(
-                    "planner_parsed",
-                    {
-                        "tool_calls": [
-                            {"name": call.name, "arguments": call.arguments}
-                            for call in calls
-                        ]
-                    },
-                )
-            return AgentPlan(tool_calls=calls, raw_text=forced_tool)
-
         settings = get_settings()
+        user_lines = ["用户问题：", question.strip()]
+        if user_image_name:
+            user_lines.extend(["", f"本轮用户附带图片：{user_image_name}"])
         messages = [
             {"role": "system", "content": TOOL_PLANNER_SYSTEM_PROMPT},
-            {"role": "user", "content": "用户问题：\n" + question.strip()},
+            {"role": "user", "content": "\n".join(user_lines)},
         ]
         if trace is not None:
             trace("planner_request", {"messages": messages})
@@ -203,7 +149,11 @@ class AgentOrchestrator:
         companion_prompt: str,
         trace: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> Iterator[str]:
-        plan = self.plan(question=question, trace=trace)
+        plan = self.plan(
+            question=question,
+            user_image_name=context.user_image_name,
+            trace=trace,
+        )
         tool_results = self.runtime.execute_many(plan.tool_calls, context)
         if trace is not None:
             trace(
@@ -230,16 +180,6 @@ class AgentOrchestrator:
             yield blocking_errors[0]
             return
 
-        direct_visual_answer = _direct_screen_answer(tool_results)
-        if direct_visual_answer is not None:
-            if trace is not None:
-                trace(
-                    "direct_visual_answer",
-                    {"chars": len(direct_visual_answer), "source": "screen.look"},
-                )
-            yield direct_visual_answer
-            return
-
         if not tool_results:
             messages = build_companion_messages(
                 question=question,
@@ -260,23 +200,6 @@ class AgentOrchestrator:
         if trace is not None:
             trace("answer_messages", {"messages": messages})
         yield from self.vision_model_client.stream_chat(messages=messages)
-
-
-def _direct_screen_answer(tool_results: list[AgentToolResult]) -> str | None:
-    if len(tool_results) != 1:
-        return None
-    result = tool_results[0]
-    if result.name != "screen.look" or not result.ok:
-        return None
-    visual_answer = str(result.data.get("visual_answer") or "").strip()
-    if visual_answer:
-        return visual_answer
-    content = result.content.strip()
-    prefix = "屏幕细看结果：\n"
-    if content.startswith(prefix):
-        body = content[len(prefix):].split("\n\n窗口元信息：", 1)[0].strip()
-        return body or None
-    return None
 
 
 def build_tool_answer_messages(
@@ -303,7 +226,7 @@ def build_tool_answer_messages(
     messages.append(
         {
             "role": "user",
-            "content": "工具执行结果（只用于回答用户，不要复述工具名）：\n\n"
+            "content": "工具执行结果（这是证据，不要复述工具名）：\n\n"
             + "\n\n".join(result_blocks),
         }
     )
@@ -368,6 +291,8 @@ def _tool_name_from_json(text: str, allowed_tool_names: tuple[str, ...]) -> str 
         value = json.loads(text)
     except json.JSONDecodeError:
         return None
+    if _json_has_empty_tool_calls(value) and "none" in allowed_tool_names:
+        return "none"
     matches = _tool_names_in_json_value(value, allowed_tool_names)
     if len(matches) == 1:
         return matches[0]
@@ -377,6 +302,10 @@ def _tool_name_from_json(text: str, allowed_tool_names: tuple[str, ...]) -> str 
             f"Expected exactly one of: {', '.join(allowed_tool_names)}."
         )
     return None
+
+
+def _json_has_empty_tool_calls(value: Any) -> bool:
+    return isinstance(value, dict) and value.get("tool_calls") == []
 
 
 def _tool_names_in_json_value(
@@ -409,39 +338,3 @@ def _tool_names_in_text(text: str, allowed_tool_names: tuple[str, ...]) -> list[
         if re.search(pattern, text):
             matches.append(tool_name)
     return matches
-
-
-def _forced_tool_for_question(question: str) -> str | None:
-    """High-confidence gate for tiny models.
-
-    The planner remains model-driven for ambiguous cases. This gate only catches
-    explicit screen-detail and explicit remember requests so obvious tool calls
-    do not depend on a small model guessing the route.
-    """
-    text = question.strip()
-    if not text:
-        return None
-
-    if any(hint in text for hint in REMEMBER_HINTS) and not any(
-        negation in text for negation in REMEMBER_NEGATIONS
-    ):
-        return "memory.remember"
-
-    if any(hint in text for hint in WINDOW_METADATA_HINTS) and "窗口" in text:
-        return None
-
-    has_region = any(hint in text for hint in VISUAL_REGION_HINTS)
-    has_target = any(hint in text for hint in VISUAL_TARGET_HINTS)
-    has_action = any(hint in text for hint in VISUAL_ACTION_HINTS)
-    mentions_current_window_content = (
-        "窗口" in text
-        and any(hint in text for hint in ("看", "分析", "显示", "有什么", "内容"))
-    )
-
-    if has_region and (has_target or has_action):
-        return "screen.look"
-    if has_target and has_action:
-        return "screen.look"
-    if mentions_current_window_content:
-        return "screen.look"
-    return None

@@ -279,7 +279,7 @@
         <div class="value" id="overviewWindow" style="font-size:13px;">—</div>
       </div>
       <div class="stat-card">
-        <div class="label">最近摘要</div>
+        <div class="label">最近观察</div>
         <div class="value" id="overviewSummary" style="font-size:12px;font-weight:400;color:var(--text-dim);">—</div>
       </div>
     </div>
@@ -359,6 +359,7 @@
           <div class="chat-display" id="chatDisplay"><span class="placeholder">输入问题发起追问（需先有窗口分析结果）</span></div>
           <div class="chat-input-row">
             <textarea id="chatInput" placeholder="输入问题，Ctrl+Enter 发送…" rows="2"></textarea>
+            <input type="file" id="chatImageInput" accept="image/*" style="max-width:170px;color:var(--text-dim);font-size:12px;">
             <button class="btn btn-primary" id="sendBtn">发送</button>
           </div>
         </div>
@@ -529,7 +530,7 @@ function renderField(f) {
   } else if (f.type === "text") {
     control = `<textarea data-key="${f.key}">${escapeHTML(value)}</textarea>`;
   } else if (f.type === "number") {
-    // 历史轮数 / 摘要数 用步进器，其它数字用普通 input
+    // 历史轮数 / 观察数 用步进器，其它数字用普通 input
     if (["chat_history_turns", "window_summary_retrieve_count"].includes(f.key)) {
       control = `<div class="stepper"><button type="button" data-step="-1">−</button><input type="number" data-key="${f.key}" value="${escapeHTML(value)}" min="0"><button type="button" data-step="1">+</button></div>`;
     } else {
@@ -676,25 +677,51 @@ async function loadHistory() {
   }
 }
 
+function readImageAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("read image failed"));
+    reader.readAsDataURL(file);
+  });
+}
+
 async function sendQuestion() {
   const input = document.getElementById("chatInput");
-  const question = input.value.trim();
-  if (!question) return;
+  const imageInput = document.getElementById("chatImageInput");
+  const questionText = input.value.trim();
+  const imageFile = imageInput && imageInput.files ? imageInput.files[0] : null;
+  if (!questionText && !imageFile) return;
+  const question = questionText || "请看这张图";
   const btn = document.getElementById("sendBtn");
   btn.disabled = true;
   const display = document.getElementById("chatDisplay");
-  display.innerHTML = `<strong>Q：</strong>${escapeHTML(question)}\n\n<strong>A：</strong>生成中…`;
+  const imageLabel = imageFile ? `
+
+[附图] ${escapeHTML(imageFile.name)}` : "";
+  display.innerHTML = `<strong>Q：</strong>${escapeHTML(question)}${imageLabel}
+
+<strong>A：</strong>生成中…`;
   try {
+    const payload = { question };
+    if (imageFile) {
+      payload.image_base64 = await readImageAsDataURL(imageFile);
+      payload.image_name = imageFile.name;
+      payload.image_mime = imageFile.type || "image/png";
+    }
     const session = await fetchJSON("/api/assistant/questions", {
       method: "POST",
-      body: JSON.stringify({ question }),
+      body: JSON.stringify(payload),
     });
     selectedTraceSessionId = session.session_id;
     loadTraces(session.session_id);
     input.value = "";
+    if (imageInput) imageInput.value = "";
     startPolling(question);
   } catch (e) {
-    display.innerHTML = `<strong>Q：</strong>${escapeHTML(question)}\n\n[发送失败] ${escapeHTML(e.message)}`;
+    display.innerHTML = `<strong>Q：</strong>${escapeHTML(question)}
+
+[发送失败] ${escapeHTML(e.message)}`;
     btn.disabled = false;
   }
 }
@@ -809,7 +836,7 @@ function renderContext(ctx, q) {
             <span class="badge">${escapeHTML(m.kind)}</span>${escapeHTML(m.text.slice(0, 220))}${m.text.length > 220 ? "…" : ""}
           </div>`).join("");
   const winSumHtml = !ctx.window_summaries || ctx.window_summaries.length === 0
-    ? `<div class="history-empty">无窗口摘要存档</div>`
+    ? `<div class="history-empty">无窗口观察存档</div>`
     : ctx.window_summaries.map(w => {
         const ts = String(w.created_at || "").slice(0, 19).replace("T", " ");
         const head = `[${escapeHTML(ts)}] ${escapeHTML(w.app_name || "")} · ${escapeHTML(w.window_title || "")}`.replace(/·\s*$/, "");
@@ -831,7 +858,7 @@ function renderContext(ctx, q) {
         <h5>上下文使用率</h5>
         <div>本次回答模式：<strong>${escapeHTML(modeLabel(usage.answer_mode))}</strong>${usage.selected_image ? `｜使用截图：${escapeHTML(usage.selected_image)}（${escapeHTML(usage.selected_reason || "")}）` : ""}</div>
         <div style="margin-top:4px;">注册工具：${usage.registered_tool_count || 0} 个｜工具 manifest 约 ${usage.tool_manifest_chars || 0} 字</div>
-        <div style="margin-top:4px;">注入内容：profile 约 ${usage.profile_chars} 字｜当前摘要约 ${usage.current_summary_chars} 字｜最近窗口摘要 ${usage.recent_summaries_count} 条/约 ${usage.recent_summaries_chars} 字｜记忆 ${usage.memory_count} 条/约 ${usage.memory_chars} 字｜对话历史 ${usage.dialogue_turns} 轮/约 ${usage.dialogue_chars} 字</div>
+        <div style="margin-top:4px;">注入内容：profile 约 ${usage.profile_chars} 字｜当前观察约 ${usage.current_summary_chars} 字｜最近窗口观察 ${usage.recent_summaries_count} 条/约 ${usage.recent_summaries_chars} 字｜记忆 ${usage.memory_count} 条/约 ${usage.memory_chars} 字｜对话历史 ${usage.dialogue_turns} 轮/约 ${usage.dialogue_chars} 字</div>
         <div style="margin-top:4px;">预算估算：约 ${usage.estimated_tokens} tokens / ${usage.ctx_size}（${pct}%）</div>
         <div class="usage-bar"><div class="${cls}" style="width:${pct}%"></div></div>
       </div>`;
@@ -877,7 +904,7 @@ function renderContext(ctx, q) {
       </div>
     </div>
     <div class="context-block">
-      <h5>历史窗口摘要（${ctx.window_summaries ? ctx.window_summaries.length : 0} 条，设置：${ctx.window_summary_retrieve_count_setting}）</h5>
+      <h5>历史窗口观察（${ctx.window_summaries ? ctx.window_summaries.length : 0} 条，设置：${ctx.window_summary_retrieve_count_setting}）</h5>
       ${winSumHtml}
     </div>
     <div class="context-block">
