@@ -3,11 +3,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
-from app.schemas.analyze import CandidateQuestion, WindowAnalysis
+from app.schemas.analyze import CandidateQuestion, VisionInput, WindowAnalysis
 from app.schemas.window import RawWindowCapture, WindowBounds
 from app.services.observation_builder import ObservationBuilder
 from app.services.vision_model_client import extract_json_object, parse_window_analysis
-from app.services.window_analysis import WindowAnalysisService
+from app.services.window_analysis import ObservationAgent
 
 
 class FakeRuntimeManager:
@@ -19,14 +19,31 @@ class FakeRuntimeManager:
 
 
 class FakeVisionModelClient:
-    def __init__(self, analysis: WindowAnalysis) -> None:
+    """模拟视觉模型客户端。
+
+    analyze_image 返回 (WindowAnalysis, VisionInput) 元组，
+    与真实 VisionModelClient.analyze_image 的签名保持一致。
+    """
+
+    def __init__(
+        self,
+        analysis: WindowAnalysis,
+        *,
+        vision_input: VisionInput | None = None,
+    ) -> None:
         self.analysis = analysis
         self.endpoint = "http://127.0.0.1:18181/v1/chat/completions"
         self.image_paths: list[Path] = []
+        self.vision_input = vision_input or VisionInput(
+            original_size=[1822, 827],
+            sent_size=[1024, 465],
+            long_edge=1024,
+            detail_mode="standard",
+        )
 
-    def analyze_image(self, image_path: Path) -> WindowAnalysis:
+    def analyze_image(self, image_path: Path) -> tuple[WindowAnalysis, VisionInput]:
         self.image_paths.append(image_path)
-        return self.analysis
+        return self.analysis, self.vision_input
 
 
 class FakeRuntimeStore:
@@ -51,6 +68,10 @@ class FakeRuntimeStore:
     def record_event(self, name: str, payload: object) -> bool:
         self.events.append((name, payload))
         return True
+
+    def delete(self, name: str) -> None:
+        self.data.pop(name, None)
+        self.ttls.pop(name, None)
 
 
 def make_capture(image_path: Path, screenshot_hash: str = "abc123") -> RawWindowCapture:
@@ -112,7 +133,7 @@ def test_window_analysis_service_stores_latest_summary_in_runtime_store(tmp_path
     runtime = FakeRuntimeManager()
     client = FakeVisionModelClient(analysis)
     runtime_store = FakeRuntimeStore()
-    service = WindowAnalysisService(
+    service = ObservationAgent(
         runtime_manager=runtime,
         vision_model_client=client,
         runtime_store=runtime_store,
@@ -144,7 +165,7 @@ def test_window_analysis_service_pauses_privacy_without_model_call(tmp_path) -> 
         )
     )
     runtime_store = FakeRuntimeStore()
-    service = WindowAnalysisService(
+    service = ObservationAgent(
         runtime_manager=runtime,
         vision_model_client=client,
         runtime_store=runtime_store,
@@ -159,3 +180,113 @@ def test_window_analysis_service_pauses_privacy_without_model_call(tmp_path) -> 
     assert result.observation.privacy_state == "privacy"
     assert result.analysis.summary == "当前窗口可能包含敏感信息，已暂停自动分析。"
     assert runtime_store.data["window:latest_analysis"]["observation"]["privacy_state"] == "privacy"
+
+
+def test_window_analysis_service_records_vision_input_metadata(tmp_path) -> None:
+    """分析结果必须记录 original_size / sent_size / long_edge / detail_mode，
+    便于调试图片缩放对识别质量的影响。"""
+    capture = make_capture(tmp_path / "capture.png")
+    analysis = WindowAnalysis(
+        window_type="ide",
+        summary="VS Code with README.",
+        key_points=["editor"],
+        candidate_questions=[],
+    )
+    expected_vision = VisionInput(
+        original_size=[1822, 827],
+        sent_size=[1024, 465],
+        long_edge=1024,
+        detail_mode="standard",
+    )
+    runtime = FakeRuntimeManager()
+    client = FakeVisionModelClient(analysis, vision_input=expected_vision)
+    runtime_store = FakeRuntimeStore()
+    service = ObservationAgent(
+        runtime_manager=runtime,
+        vision_model_client=client,
+        runtime_store=runtime_store,
+        latest_analysis_ttl_seconds=60,
+    )
+
+    result = service.analyze_capture(capture)
+
+    assert result.vision_input is not None
+    assert result.vision_input.original_size == [1822, 827]
+    assert result.vision_input.sent_size == [1024, 465]
+    assert result.vision_input.long_edge == 1024
+    assert result.vision_input.detail_mode == "standard"
+    # 同时写入 runtime_store，便于后续追溯
+    stored = runtime_store.data["window:latest_analysis"]
+    assert stored["vision_input"]["original_size"] == [1822, 827]
+    assert stored["vision_input"]["sent_size"] == [1024, 465]
+
+
+def test_window_analysis_service_records_screenshot_path_in_summary_store(tmp_path) -> None:
+    """WindowSummaryStore 必须保存 screenshot_path / screenshot_hash / window_bounds，
+    以便视觉追问时根据摘要找到对应截图。"""
+    from app.services.window_summary_store import WindowSummaryStore
+
+    capture = make_capture(tmp_path / "capture.png", screenshot_hash="hash-xyz")
+    analysis = WindowAnalysis(
+        window_type="ide",
+        summary="VS Code with project open.",
+        key_points=["README", "backend"],
+        candidate_questions=[],
+        uncertain_areas=["底部状态栏小字不清晰"],
+    )
+    runtime = FakeRuntimeManager()
+    client = FakeVisionModelClient(analysis)
+    runtime_store = FakeRuntimeStore()
+    summary_store = WindowSummaryStore(runtime_store=runtime_store, history_limit=10)
+    service = ObservationAgent(
+        runtime_manager=runtime,
+        vision_model_client=client,
+        runtime_store=runtime_store,
+        window_summary_store=summary_store,
+        latest_analysis_ttl_seconds=60,
+    )
+
+    service.analyze_capture(capture)
+
+    items = summary_store.recent(limit=5)
+    assert len(items) == 1
+    record = items[0]
+    assert record["screenshot_path"] == str(capture.screenshot_path)
+    assert record["screenshot_hash"] == "hash-xyz"
+    assert record["window_bounds"] == {"left": 10, "top": 20, "right": 810, "bottom": 620}
+    assert record["process_id"] == 1234
+    assert record["vision_input"]["long_edge"] == 1024
+    # find_by_screenshot_hash 应能回查
+    found = summary_store.find_by_screenshot_hash("hash-xyz")
+    assert found is not None
+    assert found["screenshot_path"] == str(capture.screenshot_path)
+    # 找不到时返回 None
+    assert summary_store.find_by_screenshot_hash("nonexistent") is None
+
+
+def test_window_analysis_service_handles_uncertain_areas(tmp_path) -> None:
+    """WindowAnalysis.uncertain_areas 字段应能正确解析模型输出。"""
+    raw = """
+{
+  "window_type": "webpage",
+  "summary": "网页内容描述。",
+  "key_points": ["标题", "导航栏"],
+  "candidate_questions": [],
+  "caution": null,
+  "uncertain_areas": ["底部小字不清晰", "右侧广告位被遮挡"]
+}
+"""
+    parsed = parse_window_analysis(raw)
+    assert parsed.uncertain_areas == ["底部小字不清晰", "右侧广告位被遮挡"]
+
+    # 缺省值应为空列表
+    raw_no_uncertain = """
+{
+  "window_type": "ide",
+  "summary": "IDE",
+  "key_points": [],
+  "candidate_questions": []
+}
+"""
+    parsed_no_uncertain = parse_window_analysis(raw_no_uncertain)
+    assert parsed_no_uncertain.uncertain_areas == []

@@ -27,13 +27,15 @@ STATE_POLL_SECONDS = 0.5
 ANALYSIS_POLL_SECONDS = 1.0
 CHAT_POLL_SECONDS = 0.75
 CHAT_HISTORY_POLL_SECONDS = 6.0
+CHAT_CONTEXT_STATUS_POLL_SECONDS = 3.0
+CHAT_OBSERVE_CAPTURE_DELAY_SECONDS = 0.12
 
 CANVAS_WIDTH = 520
 BASE_CANVAS_HEIGHT = 372
 PANEL_TOP = 360
-PANEL_HEIGHT = 470
+PANEL_HEIGHT = 70
 EXPANDED_CANVAS_HEIGHT = PANEL_TOP + PANEL_HEIGHT + 22
-UI_SCALE = 0.78
+UI_SCALE = 0.65
 WINDOW_WIDTH = int(round(CANVAS_WIDTH * UI_SCALE))
 WINDOW_HEIGHT = int(round(EXPANDED_CANVAS_HEIGHT * UI_SCALE))
 MASCOT_WIDTH = 300
@@ -43,18 +45,11 @@ CHAT_CANVAS_HEIGHT = 560
 CHAT_WINDOW_WIDTH = CHAT_CANVAS_WIDTH
 CHAT_WINDOW_HEIGHT = CHAT_CANVAS_HEIGHT
 CHAT_CONTEXT_TOP = 98
-CHAT_CONTEXT_HEIGHT = 92
+CHAT_CONTEXT_HEIGHT = 72
 CHAT_MESSAGE_TOP = CHAT_CONTEXT_TOP + CHAT_CONTEXT_HEIGHT + 14
 CHAT_WHEEL_STEP = 96
 
 STATES = ["idle", "observing", "analyzing", "privacy", "error"]
-STATE_LABELS = {
-    "idle": "待命",
-    "observing": "观察",
-    "analyzing": "分析",
-    "privacy": "隐私",
-    "error": "异常",
-}
 STATE_COLORS = {
     "idle": "#15c7f3",
     "observing": "#16b8ee",
@@ -122,6 +117,7 @@ AC_SRC_ALPHA = 0x01
 BI_RGB = 0
 DIB_RGB_COLORS = 0
 HWND_TOPMOST = wintypes.HWND(-1)
+WDA_EXCLUDEFROMCAPTURE = 0x00000011
 
 user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
 user32.DefWindowProcW.restype = LRESULT
@@ -151,6 +147,8 @@ user32.SetCapture.argtypes = [wintypes.HWND]
 user32.ReleaseCapture.argtypes = []
 user32.DestroyWindow.argtypes = [wintypes.HWND]
 user32.PostQuitMessage.argtypes = [ctypes.c_int]
+user32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
+user32.SetWindowDisplayAffinity.restype = wintypes.BOOL
 user32.GetDC.argtypes = [wintypes.HWND]
 user32.GetDC.restype = HDC
 user32.ReleaseDC.argtypes = [wintypes.HWND, HDC]
@@ -280,6 +278,13 @@ def hex_to_rgba(color: str, alpha: int = 255) -> tuple[int, int, int, int]:
     return (int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16), alpha)
 
 
+def format_token_count(value: int) -> str:
+    if value >= 1000:
+        formatted = f"{value / 1000:.1f}".rstrip("0").rstrip(".")
+        return f"{formatted}k"
+    return str(max(0, value))
+
+
 def premultiply_bgra(image: Image.Image) -> bytes:
     r, g, b, a = image.split()
     r = ImageChops.multiply(r, a)
@@ -325,9 +330,11 @@ class FloatingAssistantWindow:
         self.last_analysis_poll = 0.0
         self.last_chat_poll = 0.0
         self.last_chat_history_poll = 0.0
+        self.last_chat_context_status_poll = 0.0
         self.last_analysis_signature: str | None = None
         self.latest_analysis: dict[str, object] | None = None
         self.conversation: dict[str, object] | None = None
+        self.chat_context_status: dict[str, object] | None = None
         self.chat_history: list[dict[str, object]] = []
         self.chat_question = ""
         self.chat_input_focused = False
@@ -391,6 +398,7 @@ class FloatingAssistantWindow:
             raise ctypes.WinError()
 
         self.hwnd = hwnd
+        self._exclude_from_screen_capture(hwnd)
         user32.ShowWindow(hwnd, SW_SHOW)
         user32.SetTimer(hwnd, 1, 33, None)
         self.render()
@@ -425,9 +433,15 @@ class FloatingAssistantWindow:
         if not hwnd:
             raise ctypes.WinError()
         self.chat_hwnd = hwnd
+        self._exclude_from_screen_capture(hwnd)
         self.render_chat()
 
+    @staticmethod
+    def _exclude_from_screen_capture(hwnd: int) -> None:
+        user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
+
     def _open_chat_window(self) -> None:
+        self._pause_auto_watch()
         self._create_chat_window()
         if self.chat_hwnd is None:
             return
@@ -435,7 +449,9 @@ class FloatingAssistantWindow:
         self.chat_input_focused = True
         self._chat_auto_scroll = True
         self.last_chat_history_poll = 0.0
+        self.last_chat_context_status_poll = 0.0
         self._poll_chat_history(force=True)
+        self._poll_chat_context_status(force=True)
         user32.ShowWindow(self.chat_hwnd, SW_SHOW)
         user32.SetWindowPos(
             self.chat_hwnd,
@@ -450,9 +466,7 @@ class FloatingAssistantWindow:
         self.render_chat()
         self._update_chat_ime_position()
 
-    def _hide_chat_window(self, *, resume_watch: bool = False) -> None:
-        if resume_watch and self._chat_should_resume_on_exit():
-            self._resume_auto_watch()
+    def _hide_chat_window(self) -> None:
         self.chat_visible = False
         self.chat_input_focused = False
         self.chat_scroll_drag = None
@@ -558,6 +572,27 @@ class FloatingAssistantWindow:
         items = data.get("items")
         self.chat_history = items if isinstance(items, list) else []
 
+    def _poll_chat_context_status(self, *, force: bool = False) -> None:
+        now = time.monotonic()
+        if (
+            not force
+            and now - self.last_chat_context_status_poll
+            < CHAT_CONTEXT_STATUS_POLL_SECONDS
+        ):
+            return
+        self.last_chat_context_status_poll = now
+        self._request_json_async(
+            "chat-context-status",
+            "GET",
+            "/api/assistant/context-status",
+            on_success=self._apply_chat_context_status,
+        )
+
+    def _apply_chat_context_status(self, data: object) -> None:
+        self.chat_context_status = data if isinstance(data, dict) else None
+        if self.chat_visible:
+            self._chat_dirty = True
+
     def _request_json_async(
         self,
         key: str,
@@ -620,10 +655,9 @@ class FloatingAssistantWindow:
             return None
 
     def _should_show_panel(self) -> bool:
-        return (
-            self.latest_analysis is not None
-            or self.state in {"observing", "analyzing", "error"}
-        )
+        # Ambient Companion：主窗只承担存在感和入口，不再默认展示摘要面板。
+        # 始终显示轻量入口按钮，摘要内容移入对话工作台和 Work Lens。
+        return True
 
     def _handle_message(self, hwnd: int, msg: int, wparam: int, lparam: int) -> int:
         if hwnd == self.chat_hwnd:
@@ -637,6 +671,7 @@ class FloatingAssistantWindow:
             self._poll_conversation()
             if self.chat_visible:
                 self._poll_chat_history()
+                self._poll_chat_context_status()
             self.render()
             if self.chat_visible:
                 if self._chat_dirty or self._chat_render_skip <= 0:
@@ -668,15 +703,13 @@ class FloatingAssistantWindow:
 
     def _handle_chat_message(self, hwnd: int, msg: int, wparam: int, lparam: int) -> int:
         if msg == WM_DESTROY:
-            if self._chat_should_resume_on_exit():
-                self._resume_auto_watch()
             self.chat_hwnd = None
             self.chat_visible = False
             self.chat_input_focused = False
             self.chat_scroll_drag = None
             return 0
         if msg == WM_KEYDOWN and wparam == VK_ESCAPE:
-            self._hide_chat_window(resume_watch=True)
+            self._hide_chat_window()
             return 0
         if msg == WM_KEYDOWN and wparam == VK_BACK:
             if self.chat_input_focused and self.chat_question:
@@ -911,12 +944,6 @@ class FloatingAssistantWindow:
         self._set_chat_scroll(self.chat_scroll_offset - pixels)
         self._render_chat_soon(immediate=True)
 
-    def _chat_should_resume_on_exit(self) -> bool:
-        if not isinstance(self.conversation, dict):
-            return False
-        status = str(self.conversation.get("status") or "")
-        return bool(self.conversation.get("resume_required", True)) or status in {"streaming", "done", "error"}
-
     def _on_chat_mouse_down(self, lparam: int) -> None:
         x = signed_lparam_word(lparam)
         y = signed_lparam_word(lparam >> 16)
@@ -926,7 +953,7 @@ class FloatingAssistantWindow:
             user32.SetFocus(self.chat_hwnd)
 
         if hit == "close":
-            self._hide_chat_window(resume_watch=True)
+            self._hide_chat_window()
             return
         if hit == "input":
             self.chat_input_focused = True
@@ -940,7 +967,7 @@ class FloatingAssistantWindow:
             self._ask_chat_question()
             return
         if hit == "resume":
-            self._resume_auto_watch()
+            self._observe_once_from_chat()
             return
         if hit == "scrollbar":
             cursor = POINT()
@@ -1035,6 +1062,28 @@ class FloatingAssistantWindow:
         if self.chat_visible:
             self._chat_dirty = True
 
+    def _pause_auto_watch(self) -> None:
+        self._request_json_async("pause", "POST", "/api/assistant/pause")
+        if self.state in {"observing", "analyzing"}:
+            self.set_state("idle")
+
+    def _observe_once_from_chat(self) -> None:
+        if self.chat_hwnd is not None:
+            user32.ShowWindow(self.chat_hwnd, SW_HIDE)
+        self.chat_visible = False
+        self.chat_input_focused = False
+        self.chat_scroll_drag = None
+        self.conversation = None
+        self._last_conversation_status = None
+        self.set_state("observing")
+        timer = threading.Timer(
+            CHAT_OBSERVE_CAPTURE_DELAY_SECONDS,
+            lambda: self._request_json_async("observe-once", "POST", "/api/assistant/observe"),
+        )
+        timer.daemon = True
+        timer.start()
+        self.render()
+
     def _ask_chat_question(self) -> None:
         question = self.chat_question.strip()
         if not question:
@@ -1052,7 +1101,6 @@ class FloatingAssistantWindow:
 
         self._draw_aura(draw, t)
         image.alpha_composite(self._render_mascot(t))
-        self._draw_status_chip(draw)
         self._draw_toolbar(draw)
         if show_panel:
             self._draw_summary_panel(draw)
@@ -1116,15 +1164,15 @@ class FloatingAssistantWindow:
                 y = self._draw_chat_bubble(message_draw, speaker, text, y, status=status)
                 y += 8
         else:
-            message_draw.text((38, 18), "在下方输入问题，开始一次独立对话。", fill=(92, 125, 143, 255), font=self.panel_body_font)
+            message_draw.text((38, 18), "想说什么都可以，我在听。", fill=(92, 125, 143, 255), font=self.panel_body_font)
             self.chat_max_scroll = 0
             self.chat_scroll_offset = 0
         image.alpha_composite(message_layer, (0, msg_top))
 
         draw.rounded_rectangle((28, 28, CHAT_CANVAS_WIDTH - 36, 84), radius=18, fill=(235, 251, 255, 224))
         draw.ellipse((42, 47, 54, 59), fill=hex_to_rgba(color))
-        draw.text((66, 35), "对话工作台", fill=(18, 52, 72, 255), font=self.panel_title_font)
-        draw.text((66, 63), "基于最近窗口摘要和短期记忆", fill=(73, 106, 126, 255), font=self.panel_small_font)
+        draw.text((66, 35), "和我聊聊", fill=(18, 52, 72, 255), font=self.panel_title_font)
+        draw.text((66, 63), "我在这里，想聊就说", fill=(73, 106, 126, 255), font=self.panel_small_font)
         self._draw_chat_context(draw, CHAT_CONTEXT_TOP)
         self._draw_chat_close_button(draw)
 
@@ -1145,22 +1193,59 @@ class FloatingAssistantWindow:
         draw.line((x2 - 8, y1 + 8, x1 + 8, y2 - 8), fill=(72, 102, 120, 255), width=2)
 
     def _draw_chat_context(self, draw: ImageDraw.ImageDraw, y: int) -> int:
-        analysis = self._analysis_payload()
-        capture = self._capture_payload()
-        title = str(capture.get("window_title") or "等待窗口摘要")
-        summary = str(analysis.get("summary") or "自动观察线会在这里提供最近窗口摘要。")
-        draw.rounded_rectangle((32, y, CHAT_CANVAS_WIDTH - 40, y + CHAT_CONTEXT_HEIGHT), radius=16, fill=(255, 255, 255, 232), outline=(213, 235, 242, 210), width=1)
-        draw.text((48, y + 12), self._single_line_text(draw, title, self.panel_small_font, CHAT_CANVAS_WIDTH - 112), fill=(56, 88, 108, 255), font=self.panel_small_font)
-        self._draw_wrapped_text(
-            draw,
-            summary,
-            (48, y + 40),
-            self.panel_small_font,
-            (28, 66, 88, 255),
-            CHAT_CANVAS_WIDTH - 112,
-            max_lines=2,
-            line_gap=4,
+        """上下文状态卡：对齐 WebUI 的 context usage 口径，不展示窗口摘要。"""
+        draw.rounded_rectangle(
+            (32, y, CHAT_CANVAS_WIDTH - 40, y + CHAT_CONTEXT_HEIGHT),
+            radius=16,
+            fill=(255, 255, 255, 232),
+            outline=(213, 235, 242, 210),
+            width=1,
         )
+        status = self.chat_context_status if isinstance(self.chat_context_status, dict) else {}
+        usage_percent = float(status.get("usage_percent") or 0)
+        remaining_percent = float(status.get("remaining_percent") or max(0.0, 100.0 - usage_percent))
+        estimated_tokens = int(status.get("estimated_tokens") or 0)
+        ctx_size = int(status.get("ctx_size") or 0)
+        model = str(status.get("model_name") or "模型状态加载中")
+        tool_count = int(status.get("registered_tool_count") or 0)
+        dialogue_turns = int(status.get("dialogue_turns") or 0)
+        memory_count = int(status.get("memory_count") or 0)
+        recent_count = int(status.get("recent_summaries_count") or 0)
+
+        title = f"上下文 {usage_percent:.0f}% 已用（剩余 {remaining_percent:.0f}%）"
+        draw.text((48, y + 8), title, fill=(56, 88, 108, 255), font=self.panel_small_font)
+
+        bar = (48, y + 33, 238, y + 42)
+        draw.rounded_rectangle(bar, radius=4, fill=(224, 240, 246, 230))
+        fill_color = (255, 176, 46, 235) if usage_percent >= 70 else hex_to_rgba("#15c7f3", 230)
+        if usage_percent >= 88:
+            fill_color = (255, 92, 92, 235)
+        fill_width = int((bar[2] - bar[0]) * min(100.0, max(0.0, usage_percent)) / 100)
+        if fill_width > 0:
+            draw.rounded_rectangle(
+                (bar[0], bar[1], bar[0] + max(4, fill_width), bar[3]),
+                radius=4,
+                fill=fill_color,
+            )
+
+        token_text = (
+            f"{format_token_count(estimated_tokens)} / {format_token_count(ctx_size)} tokens"
+            if ctx_size > 0
+            else "tokens 估算中"
+        )
+        draw.text((250, y + 27), token_text, fill=(73, 106, 126, 255), font=self.panel_small_font)
+
+        model_text = self._single_line_text(
+            draw,
+            f"模型 {model}",
+            self.panel_small_font,
+            CHAT_CANVAS_WIDTH - 96,
+        )
+        draw.text((48, y + 49), model_text, fill=(28, 66, 88, 255), font=self.panel_small_font)
+
+        stats = f"工具 {tool_count} · 历史 {dialogue_turns} · 记忆 {memory_count} · 摘要 {recent_count}"
+        clipped_stats = self._single_line_text(draw, stats, self.panel_small_font, 204)
+        draw.text((410, y + 8), clipped_stats, fill=(73, 106, 126, 255), font=self.panel_small_font)
         return y + CHAT_CONTEXT_HEIGHT
 
     def _chat_messages(self) -> list[tuple[str, str, str]]:
@@ -1195,7 +1280,8 @@ class FloatingAssistantWindow:
         is_user = speaker == "user"
         max_width = 390 if is_user else 440
         font = self.panel_small_font if is_user else self.panel_body_font
-        lines = self._wrap_text(draw, text, font, max_width - 28, 4 if is_user else 6)
+        # 不截断消息内容：max_lines 设为很大，让完整文本展示，由消息区滚动
+        lines = self._wrap_text(draw, text, font, max_width - 28, 9999)
         bbox = draw.textbbox((0, 0), "国", font=font)
         line_height = (bbox[3] - bbox[1]) + 5
         height = max(34, len(lines) * line_height + 20)
@@ -1225,7 +1311,8 @@ class FloatingAssistantWindow:
         is_user = speaker == "user"
         max_width = 390 if is_user else 440
         font = self.panel_small_font if is_user else self.panel_body_font
-        lines = self._wrap_text(draw, text, font, max_width - 28, 4 if is_user else 6)
+        # 不截断：与 _draw_chat_bubble 保持一致的 max_lines
+        lines = self._wrap_text(draw, text, font, max_width - 28, 9999)
         bbox = draw.textbbox((0, 0), "国", font=font)
         line_height = (bbox[3] - bbox[1]) + 5
         return max(34, len(lines) * line_height + 20)
@@ -1373,21 +1460,6 @@ class FloatingAssistantWindow:
         for x, y, radius in ((270 + shift, 110, 5), (286 - shift, 130, 3)):
             draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=color)
 
-    def _draw_status_chip(self, draw: ImageDraw.ImageDraw) -> None:
-        label = STATE_LABELS[self.state]
-        color = STATE_COLORS[self.state]
-        center_x = CANVAS_WIDTH / 2
-        rect = (center_x - 41, 262, center_x + 41, 294)
-        draw.rounded_rectangle(rect, radius=15, fill=(248, 255, 255, 230), outline=(217, 238, 245, 220), width=1)
-        draw.ellipse((center_x - 26, 274, center_x - 16, 284), fill=hex_to_rgba(color))
-        bbox = draw.textbbox((0, 0), label, font=self.label_font)
-        draw.text(
-            (center_x + 8 - (bbox[2] - bbox[0]) / 2, 277 - (bbox[3] - bbox[1]) / 2),
-            label,
-            fill=(23, 54, 74, 255),
-            font=self.label_font,
-        )
-
     def _draw_toolbar(self, draw: ImageDraw.ImageDraw) -> None:
         y = 306
         size = 42
@@ -1476,6 +1548,10 @@ class FloatingAssistantWindow:
         draw.line((x2 - 8, y1 + 8, x1 + 8, y2 - 8), fill=(86, 112, 131, 255), width=2)
 
     def _draw_summary_panel(self, draw: ImageDraw.ImageDraw) -> None:
+        """Ambient Companion 入口面板：只承担存在感和入口按钮，不展示窗口摘要。
+
+        摘要内容移入对话工作台和 Work Lens，主窗保持安静。
+        """
         self.resume_region = None
 
         x1 = 34
@@ -1496,39 +1572,8 @@ class FloatingAssistantWindow:
             width=2,
         )
 
-        analysis = self._analysis_payload()
-        summary = analysis.get("summary") or self._empty_summary_text()
-        key_points = analysis.get("key_points") if isinstance(analysis.get("key_points"), list) else []
-
-        cursor_y = y1 + 20
-        draw.text((x1 + 20, cursor_y), "当前页面摘要", fill=(18, 52, 72, 255), font=self.panel_title_font)
-        cursor_y += 40
-        cursor_y = self._draw_wrapped_text(
-            draw,
-            str(summary),
-            (x1 + 20, cursor_y),
-            self.panel_body_font,
-            (25, 60, 80, 255),
-            x2 - x1 - 40,
-            max_lines=6,
-            line_gap=7,
-        )
-
-        if key_points:
-            cursor_y += 16
-            for item in key_points[:4]:
-                cursor_y = self._draw_wrapped_text(
-                    draw,
-                    f"· {item}",
-                    (x1 + 20, cursor_y),
-                    self.panel_small_font,
-                    (35, 72, 94, 255),
-                    x2 - x1 - 40,
-                    max_lines=1,
-                    line_gap=6,
-                )
-
-        self._draw_ask_button(draw, x1, y2 - 64, x2)
+        # 只绘制入口按钮，居中放置
+        self._draw_ask_button(draw, x1, y1 + 16, x2)
 
     def _draw_ask_button(self, draw: ImageDraw.ImageDraw, x1: int, y: int, x2: int) -> None:
         """底部提问按钮：点击直接打开对话框。"""
@@ -1568,15 +1613,6 @@ class FloatingAssistantWindow:
             fill=(22, 68, 90, 255),
             font=self.panel_button_font,
         )
-
-    def _empty_summary_text(self) -> str:
-        if self.state == "observing":
-            return "正在观察当前窗口。"
-        if self.state == "analyzing":
-            return "正在生成当前页面摘要。"
-        if self.state == "error":
-            return "后端或模型暂时不可用。"
-        return "窗口变化后会在这里显示摘要。"
 
     def _draw_wrapped_text(
         self,

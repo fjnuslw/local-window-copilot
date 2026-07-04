@@ -104,6 +104,57 @@ class RuntimeStore:
         except sqlite3.Error as exc:
             self._raise_failure(exc)
 
+    def list_events(
+        self,
+        *,
+        names: list[str] | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        effective_limit = max(1, min(limit, 500))
+        try:
+            with self._lock, self._connect() as connection:
+                if names:
+                    placeholders = ",".join("?" for _ in names)
+                    rows = connection.execute(
+                        f"""
+                        select id, name, payload, created_at
+                        from runtime_events
+                        where name in ({placeholders})
+                        order by id desc
+                        limit ?
+                        """,
+                        (*names, effective_limit),
+                    ).fetchall()
+                else:
+                    rows = connection.execute(
+                        """
+                        select id, name, payload, created_at
+                        from runtime_events
+                        order by id desc
+                        limit ?
+                        """,
+                        (effective_limit,),
+                    ).fetchall()
+            self.last_error = None
+        except sqlite3.Error as exc:
+            self._raise_failure(exc)
+
+        events: list[dict[str, Any]] = []
+        for event_id, name, payload_text, created_at in rows:
+            try:
+                payload = json.loads(payload_text)
+            except json.JSONDecodeError:
+                payload = payload_text
+            events.append(
+                {
+                    "id": event_id,
+                    "name": name,
+                    "payload": payload,
+                    "created_at": created_at,
+                }
+            )
+        return events
+
     def require_ready(self) -> None:
         self._initialize()
         try:

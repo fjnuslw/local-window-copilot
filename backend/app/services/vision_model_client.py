@@ -13,9 +13,13 @@ from typing import Any
 from PIL import Image
 
 from app.core.config import get_settings
-from app.schemas.analyze import WindowAnalysis, WindowAnalysisResult
+from app.schemas.analyze import VisionInput, WindowAnalysis
 from app.schemas.chat import ChatSession
 from app.schemas.memory import MemoryItem
+from app.services.local_copilot_identity import (
+    is_local_copilot_title,
+    mentions_local_copilot,
+)
 
 
 class VisionModelClientError(RuntimeError):
@@ -35,14 +39,6 @@ class VisionModelClient:
         analyze_max_tokens: int = 700,
         answer_temperature: float = 0.2,
         answer_max_tokens: int = 800,
-        chat_history_question_max_chars: int = 300,
-        chat_history_answer_max_chars: int = 400,
-        memory_item_max_chars: int = 220,
-        personality_enabled: bool = False,
-        personality_name: str = "",
-        personality_traits: str = "",
-        system_prompt_prefix: str = "",
-        answer_style_hint: str = "",
     ) -> None:
         self.endpoint = endpoint
         self.model_name = model_name
@@ -53,18 +49,14 @@ class VisionModelClient:
         self.analyze_max_tokens = analyze_max_tokens
         self.answer_temperature = answer_temperature
         self.answer_max_tokens = answer_max_tokens
-        self.chat_history_question_max_chars = chat_history_question_max_chars
-        self.chat_history_answer_max_chars = chat_history_answer_max_chars
-        self.memory_item_max_chars = memory_item_max_chars
-        self.personality_enabled = personality_enabled
-        self.personality_name = personality_name
-        self.personality_traits = personality_traits
-        self.system_prompt_prefix = system_prompt_prefix
-        self.answer_style_hint = answer_style_hint
 
-    def analyze_image(self, image_path: Path) -> WindowAnalysis:
+    def analyze_image(self, image_path: Path) -> tuple[WindowAnalysis, VisionInput]:
+        """分析窗口截图。返回 (分析结果, 视觉输入元信息)。
+
+        视觉输入元信息记录原图尺寸与送入模型的缩放后尺寸，便于调试与追溯。
+        """
         prompt = self.prompt_path.read_text(encoding="utf-8")
-        image_data_url = self._image_to_data_url(image_path)
+        image_data_url, original_size, sent_size = self._image_to_data_url(image_path)
         payload = {
             "model": self.model_name,
             "temperature": self.analyze_temperature,
@@ -87,13 +79,21 @@ class VisionModelClient:
         )
         with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
             raw = json.loads(response.read().decode("utf-8"))
-        return parse_window_analysis(extract_message_content(raw))
+        analysis = parse_window_analysis(extract_message_content(raw))
+        vision_input = VisionInput(
+            original_size=original_size,
+            sent_size=sent_size,
+            long_edge=self.image_long_edge,
+            detail_mode=_detail_mode_for_long_edge(self.image_long_edge),
+        )
+        return analysis, vision_input
 
     def stream_chat(
         self,
         *,
         messages: list[dict[str, Any]],
         image_path: Path | None = None,
+        image_long_edge: int | None = None,
     ) -> Iterator[str]:
         """纯文本多轮对话（messages 结构）。可选在最后一条 user 消息附加截图。
 
@@ -102,7 +102,10 @@ class VisionModelClient:
         """
         payload_messages: list[dict[str, Any]] = [dict(m) for m in messages]
         if image_path is not None and payload_messages:
-            image_data_url = self._image_to_data_url(image_path)
+            image_data_url, _orig, _sent = self._image_to_data_url(
+                image_path,
+                image_long_edge=image_long_edge,
+            )
             last = payload_messages[-1]
             if last.get("role") == "user" and isinstance(last.get("content"), str):
                 last["content"] = [
@@ -138,28 +141,48 @@ class VisionModelClient:
                 if text:
                     yield text
 
-    def stream_answer(
+    def complete_chat(
         self,
         *,
-        latest: WindowAnalysisResult,
+        messages: list[dict[str, Any]],
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> str:
+        payload = {
+            "model": self.model_name,
+            "temperature": self.answer_temperature if temperature is None else temperature,
+            "max_tokens": self.answer_max_tokens if max_tokens is None else max_tokens,
+            "stream": False,
+            "messages": messages,
+        }
+        request = urllib.request.Request(
+            self.endpoint,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            raw = json.loads(response.read().decode("utf-8"))
+        return extract_message_content(raw)
+
+    def stream_visual_answer(
+        self,
+        *,
         question: str,
-        memory_items: list[MemoryItem] | None = None,
-        chat_history: list[ChatSession] | None = None,
+        image_path: Path,
+        visual_prompt: str,
+        image_long_edge: int | None = None,
     ) -> Iterator[str]:
-        image_data_url = self._image_to_data_url(latest.capture.screenshot_path)
-        prompt = build_question_prompt(
-            latest,
-            question,
-            memory_items=memory_items,
-            chat_history=chat_history,
-            question_max_chars=self.chat_history_question_max_chars,
-            answer_max_chars=self.chat_history_answer_max_chars,
-            memory_item_max_chars=self.memory_item_max_chars,
-            personality_enabled=self.personality_enabled,
-            personality_name=self.personality_name,
-            personality_traits=self.personality_traits,
-            system_prompt_prefix=self.system_prompt_prefix,
-            answer_style_hint=self.answer_style_hint,
+        """视觉追问：基于截图直接回答用户问题。
+
+        与 stream_chat 的区别：
+        - 使用 visual_question_answer prompt 作为 system 消息（而非 BASE_PREFIX + context）。
+        - 不注入 profile/context/history，避免干扰视觉回答。
+        - 图片直接附加在 user 消息上。
+        """
+        image_data_url, _orig, _sent = self._image_to_data_url(
+            image_path,
+            image_long_edge=image_long_edge,
         )
         payload = {
             "model": self.model_name,
@@ -167,13 +190,14 @@ class VisionModelClient:
             "max_tokens": self.answer_max_tokens,
             "stream": True,
             "messages": [
+                {"role": "system", "content": visual_prompt},
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": prompt},
+                        {"type": "text", "text": question},
                         {"type": "image_url", "image_url": {"url": image_data_url}},
                     ],
-                }
+                },
             ],
         }
         request = urllib.request.Request(
@@ -198,14 +222,32 @@ class VisionModelClient:
                 if text:
                     yield text
 
-    def _image_to_data_url(self, image_path: Path) -> str:
+    def _image_to_data_url(
+        self,
+        image_path: Path,
+        *,
+        image_long_edge: int | None = None,
+    ) -> tuple[str, list[int], list[int]]:
+        """缩放图片并转 data_url。返回 (data_url, original_size, sent_size)。"""
+        long_edge = image_long_edge or self.image_long_edge
         with Image.open(image_path) as image:
+            original_size = [image.width, image.height]
             image = image.convert("RGB")
-            image.thumbnail((self.image_long_edge, self.image_long_edge))
+            image.thumbnail((long_edge, long_edge))
+            sent_size = [image.width, image.height]
             output = BytesIO()
             image.save(output, format="JPEG", quality=85, optimize=True)
         encoded = base64.b64encode(output.getvalue()).decode("ascii")
-        return f"data:image/jpeg;base64,{encoded}"
+        return f"data:image/jpeg;base64,{encoded}", original_size, sent_size
+
+
+def _detail_mode_for_long_edge(long_edge: int) -> str:
+    """将长边像素映射回视觉清晰度档位名，用于记录与展示。"""
+    if long_edge <= 768:
+        return "fast"
+    if long_edge <= 1024:
+        return "standard"
+    return "detailed"
 
 
 def extract_message_content(response: dict[str, Any]) -> str:
@@ -269,90 +311,82 @@ def extract_stream_delta(response: dict[str, Any]) -> str:
     return text if isinstance(text, str) else ""
 
 
-def build_question_prompt(
-    latest: WindowAnalysisResult,
-    question: str,
+BASE_PREFIX = """你是本地桌宠式窗口 Copilot。
+你会收到 profile / context / dialogue 三类输入。
+不要输出 JSON、日志、接口名。
+无法确定时说明不确定。
+不要声称能自动点击、输入或操作电脑。
+用中文回答。"""
+
+
+def build_context_packet(
     *,
+    current_app_name: str | None = None,
+    current_window_title: str | None = None,
+    current_window_type: str | None = None,
+    current_summary: str | None,
+    current_key_points: list[str],
+    history_window_summaries: list[dict[str, Any]] | None = None,
     memory_items: list[MemoryItem] | None = None,
-    chat_history: list[ChatSession] | None = None,
-    question_max_chars: int = 300,
-    answer_max_chars: int = 400,
     memory_item_max_chars: int = 220,
-    personality_enabled: bool = False,
-    personality_name: str = "",
-    personality_traits: str = "",
-    system_prompt_prefix: str = "",
-    answer_style_hint: str = "",
 ) -> str:
-    analysis = latest.analysis
-    key_points = "\n".join(f"- {item}" for item in analysis.key_points[:6])
-
-    # 性格与人设描述
-    persona_block = ""
-    if personality_enabled:
-        persona_lines: list[str] = []
-        if personality_name.strip():
-            persona_lines.append(f"你的名字是「{personality_name.strip()}」。")
-        if personality_traits.strip():
-            persona_lines.append(f"性格特征：{personality_traits.strip()}")
-        if persona_lines:
-            persona_block = "\n".join(persona_lines) + "\n"
-
-    # 自定义系统提示前缀
-    prefix_block = ""
-    if system_prompt_prefix.strip():
-        prefix_block = system_prompt_prefix.strip() + "\n\n"
-
-    # 回答风格提示
-    style_line = ""
-    if answer_style_hint.strip():
-        style_line = f"- 回答风格：{answer_style_hint.strip()}"
-
-    memory_text = ""
+    """构建 context_packet：当前窗口摘要 + 历史窗口摘要 + 记忆。高频变化。"""
+    parts: list[str] = []
+    current_meta_lines = []
+    if current_app_name:
+        current_meta_lines.append(f"- 应用：{current_app_name}")
+    if current_window_title:
+        current_meta_lines.append(f"- 标题：{current_window_title}")
+    if current_window_type:
+        current_meta_lines.append(f"- 类型：{current_window_type}")
+    if current_meta_lines:
+        parts.append(
+            "当前窗口元信息（回答“当前/这个窗口”问题时优先使用）：\n"
+            + "\n".join(current_meta_lines)
+            + "\n- 注意：本应用自身浮窗不是用户正在询问的当前窗口。"
+        )
+    if current_summary:
+        kp = "；".join(current_key_points[:6]) if current_key_points else ""
+        block = f"当前窗口摘要：\n{current_summary}"
+        if kp:
+            block += f"\n关键点：{kp}"
+        parts.append(block)
+    if history_window_summaries:
+        lines: list[str] = []
+        for rec in history_window_summaries:
+            ts = str(rec.get("created_at", ""))[:19].replace("T", " ")
+            app = rec.get("app_name", "") or ""
+            title = rec.get("window_title", "") or ""
+            if is_local_copilot_title(str(title)):
+                continue
+            wtype = rec.get("window_type", "") or ""
+            summ = str(rec.get("summary", ""))[:300]
+            if mentions_local_copilot(summ):
+                continue
+            head = f"[{ts}] {app} · {title}".strip(" ·")
+            if wtype:
+                head += f"（{wtype}）"
+            lines.append(f"- {head}：{summ}")
+        if lines:
+            parts.append("最近观察到的窗口（按时间正序，仅作背景参考）：\n" + "\n".join(lines))
     if memory_items:
-        lines = [
+        mlines = [
             f"- {item.text[:memory_item_max_chars]}"
             for item in memory_items
-            if item.text.strip()
+            if item.text.strip() and not mentions_local_copilot(item.text)
         ]
-        if lines:
-            memory_text = "\n相关记忆：\n" + "\n".join(lines) + "\n"
-    history_text = ""
-    if chat_history:
-        turns: list[str] = []
-        for session in chat_history:
-            q = session.question.strip()
-            a = session.answer.strip()
-            if q and a and session.status in {"done"}:
-                turns.append(f"用户：{q[:question_max_chars]}\n助手：{a[:answer_max_chars]}")
-        if turns:
-            history_text = (
-                "\n之前的对话（用于理解追问上下文，可参考但不要重复已有内容）：\n"
-                + "\n\n".join(turns)
-                + "\n"
-            )
-    return f"""{prefix_block}你是一个本地桌面悬浮 AI 助手。用户正在询问当前窗口内容。
-{persona_block}
-回答要求：
-- 只回答用户问题，不输出系统状态、来源、接口名、日志、JSON。
-- 如果截图或摘要不足以确定答案，直接说明不确定，并给出下一步需要用户补充的信息。
-- 使用简洁中文，优先给可执行建议。
-- 相关记忆只作为辅助线索，不能覆盖当前截图和当前窗口摘要。
-- 如果用户在追问，结合之前的对话上下文理解意图，保持连贯。{style_line}
-
-当前窗口摘要：
-{analysis.summary}
-
-关键点：
-{key_points}{memory_text}{history_text}
-用户问题：
-{question}
-"""
+        if mlines:
+            parts.append("相关记忆：\n" + "\n".join(mlines))
+    return "\n\n".join(parts)
 
 
 def build_chat_messages(
     *,
     question: str,
+    profile_packet: str,
+    current_app_name: str | None = None,
+    current_window_title: str | None = None,
+    current_window_type: str | None = None,
     current_summary: str | None,
     current_key_points: list[str],
     history_window_summaries: list[dict[str, Any]] | None = None,
@@ -361,97 +395,109 @@ def build_chat_messages(
     question_max_chars: int = 500,
     answer_max_chars: int = 800,
     memory_item_max_chars: int = 220,
-    personality_enabled: bool = False,
-    personality_name: str = "",
-    personality_traits: str = "",
-    system_prompt_prefix: str = "",
-    answer_style_hint: str = "",
 ) -> list[dict[str, Any]]:
-    """构建对话 agent 的 messages 数组（system + 多轮历史 + 当前问题）。
+    """构建 KV cache 友好的分层 messages。
 
-    与 build_question_prompt 的区别：
-    - 对话历史以 user/assistant 交替的 messages 多轮结构传递，而非文本拼接，
-      模型能真正理解自己之前的回答，实现"记得自己做了什么"的可迭代 agent。
-    - 当前窗口摘要、历史窗口摘要、记忆作为 system message 背景。
+    结构（见 kv_cache_profile_and_agent_split_spec_zh.md §5）：
+        messages[0] system: base_prefix        稳定，不随用户/窗口/记忆变化
+        messages[1] user:   <profile_packet>   低频变化（WebUI 编辑后生效）
+        messages[2] user:   <context_packet>   高频变化（每次窗口变化）
+        messages[3..]      dialogue_tail       user/assistant 多轮 + 当前问题
+
+    base_prefix 完全由 BASE_PREFIX 常量决定，不依赖任何运行时参数，
+    因此窗口摘要/profile/记忆变化时 messages[0] 保持不变。
     """
-    prefix_block = system_prompt_prefix.strip() + "\n\n" if system_prompt_prefix.strip() else ""
-
-    persona_block = ""
-    if personality_enabled:
-        persona_lines: list[str] = []
-        if personality_name.strip():
-            persona_lines.append(f"你的名字是「{personality_name.strip()}」。")
-        if personality_traits.strip():
-            persona_lines.append(f"性格特征：{personality_traits.strip()}")
-        if persona_lines:
-            persona_block = "\n".join(persona_lines) + "\n"
-
-    style_line = f"- 回答风格：{answer_style_hint.strip()}" if answer_style_hint.strip() else ""
-
-    # 当前窗口摘要
-    current_block = ""
-    if current_summary:
-        kp = "；".join(current_key_points[:6]) if current_key_points else ""
-        current_block = f"当前窗口摘要：\n{current_summary}"
-        if kp:
-            current_block += f"\n关键点：{kp}"
-        current_block += "\n\n"
-
-    # 历史窗口摘要（最近 N 条，标注时间）
-    history_block = ""
-    if history_window_summaries:
-        lines: list[str] = []
-        for rec in history_window_summaries:
-            ts = str(rec.get("created_at", ""))[:19].replace("T", " ")
-            app = rec.get("app_name", "") or ""
-            title = rec.get("window_title", "") or ""
-            wtype = rec.get("window_type", "") or ""
-            summ = str(rec.get("summary", ""))[:300]
-            head = f"[{ts}] {app} · {title}".strip(" ·")
-            if wtype:
-                head += f"（{wtype}）"
-            lines.append(f"- {head}：{summ}")
-        if lines:
-            history_block = "最近观察到的窗口（按时间正序，仅作背景参考）：\n" + "\n".join(lines) + "\n\n"
-
-    # 记忆
-    memory_block = ""
-    if memory_items:
-        mlines = [
-            f"- {item.text[:memory_item_max_chars]}"
-            for item in memory_items
-            if item.text.strip()
-        ]
-        if mlines:
-            memory_block = "相关记忆：\n" + "\n".join(mlines) + "\n\n"
-
-    system_text = f"""{prefix_block}你是一个本地桌面悬浮 AI 助手，正在与用户进行多轮对话。
-{persona_block}
-你会持续观察用户的前台窗口（由识图摘要服务提供），用户的问题通常围绕当前窗口内容。
-你的职责是基于窗口摘要与对话历史回答用户问题、给出可执行建议。
-
-回答要求：
-- 只回答用户问题，不输出系统状态、来源、接口名、日志、JSON。
-- 如果窗口摘要不足以确定答案，直接说明不确定，并给出下一步需要用户补充的信息。
-- 使用简洁中文，优先给可执行建议。
-- 你能看到完整的多轮对话历史，请保持连贯，记住自己之前说过什么，不要重复已有内容。{style_line}
-
-{current_block}{history_block}{memory_block}"""
-    # 修剪 system_text 末尾多余换行
-    system_text = system_text.rstrip() + "\n"
-
-    messages: list[dict[str, Any]] = [{"role": "system", "content": system_text}]
-
-    # 多轮对话历史（旧→新），仅取 done 且非空
+    messages: list[dict[str, Any]] = []
+    # [0] system: base_prefix（稳定）
+    messages.append({"role": "system", "content": BASE_PREFIX})
+    # [1] user: profile_packet（低频变化）
+    packet = profile_packet.strip()
+    if packet:
+        messages.append({"role": "user", "content": packet})
+    # [2] user: context_packet（高频变化）
+    context_packet = build_context_packet(
+        current_app_name=current_app_name,
+        current_window_title=current_window_title,
+        current_window_type=current_window_type,
+        current_summary=current_summary,
+        current_key_points=current_key_points,
+        history_window_summaries=history_window_summaries,
+        memory_items=memory_items,
+        memory_item_max_chars=memory_item_max_chars,
+    )
+    if context_packet.strip():
+        messages.append({"role": "user", "content": context_packet.strip()})
+    # [3..] dialogue_tail（多轮历史 + 当前问题）
     if chat_history:
         for session in chat_history:
             q = session.question.strip()
             a = session.answer.strip()
+            if mentions_local_copilot(q) or mentions_local_copilot(a):
+                continue
             if q and a and session.status in {"done"}:
                 messages.append({"role": "user", "content": q[:question_max_chars]})
                 messages.append({"role": "assistant", "content": a[:answer_max_chars]})
+    messages.append({"role": "user", "content": question})
+    return messages
 
-    # 当前问题
+
+def build_companion_messages(
+    *,
+    question: str,
+    companion_prompt: str,
+    profile_packet: str,
+    chat_history: list[ChatSession] | None = None,
+    user_goals: list[dict[str, Any]] | None = None,
+    question_max_chars: int = 500,
+    answer_max_chars: int = 800,
+) -> list[dict[str, Any]]:
+    """构建陪伴模式的轻量 messages。
+
+    结构（见 ambient_companion_product_spec_zh.md §4.2 / §6.1）：
+        messages[0] system: companion_prompt  陪伴人设，稳定
+        messages[1] user:   <profile_packet>  低频变化
+        messages[2] user:   <user_goals>      用户最近关心的目标，低噪声陪伴记忆
+        messages[3..]      dialogue_tail      user/assistant 多轮 + 当前问题
+
+    与 build_chat_messages 的区别：不注入 context_packet（窗口摘要），
+    陪伴模式优先接住情绪和意图，不把窗口摘要当作答案来源。
+    """
+    messages: list[dict[str, Any]] = []
+    # [0] system: companion_prompt（陪伴人设）
+    prompt = companion_prompt.strip()
+    if prompt:
+        messages.append({"role": "system", "content": prompt})
+    else:
+        messages.append({"role": "system", "content": BASE_PREFIX})
+    # [1] user: profile_packet（低频变化）
+    packet = profile_packet.strip()
+    if packet:
+        messages.append({"role": "user", "content": packet})
+    if user_goals:
+        lines: list[str] = []
+        for item in user_goals[:3]:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("situation_label") or "").strip()
+            question_text = str(item.get("question") or "").strip()
+            if label and question_text:
+                lines.append(f"- {label}: {question_text[:160]}")
+        if lines:
+            messages.append({
+                "role": "user",
+                "content": "用户最近关心的事情（只用于理解语境，不要机械复述）：\n"
+                + "\n".join(lines),
+            })
+    # [3..] dialogue_tail（多轮历史 + 当前问题，不注入窗口摘要）
+    if chat_history:
+        for session in chat_history:
+            q = session.question.strip()
+            a = session.answer.strip()
+            if mentions_local_copilot(q) or mentions_local_copilot(a):
+                continue
+            if q and a and session.status in {"done"}:
+                messages.append({"role": "user", "content": q[:question_max_chars]})
+                messages.append({"role": "assistant", "content": a[:answer_max_chars]})
     messages.append({"role": "user", "content": question})
     return messages
 
@@ -469,12 +515,4 @@ def get_vision_model_client() -> VisionModelClient:
         analyze_max_tokens=settings.analyze_max_tokens,
         answer_temperature=settings.answer_temperature,
         answer_max_tokens=settings.answer_max_tokens,
-        chat_history_question_max_chars=settings.chat_history_question_max_chars,
-        chat_history_answer_max_chars=settings.chat_history_answer_max_chars,
-        memory_item_max_chars=settings.memory_item_max_chars,
-        personality_enabled=settings.personality_enabled,
-        personality_name=settings.personality_name,
-        personality_traits=settings.personality_traits,
-        system_prompt_prefix=settings.system_prompt_prefix,
-        answer_style_hint=settings.answer_style_hint,
     )

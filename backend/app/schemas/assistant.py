@@ -6,7 +6,21 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-AssistantState = Literal["idle", "observing", "analyzing", "privacy", "error"]
+AssistantState = Literal[
+    "idle",
+    "observing",
+    "analyzing",
+    "privacy",
+    "error",
+    # Ambient Companion 情感状态（见 ambient_companion_product_spec_zh.md §8.1）
+    "present",
+    "curious",
+    "focused",
+    "waiting",
+    "concerned",
+    "cheering",
+    "work_lens",
+]
 
 
 class AssistantStateUpdate(BaseModel):

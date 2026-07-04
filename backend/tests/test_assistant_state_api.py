@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from app import main as main_module
 from app.api.routes import assistant as assistant_routes
+from app.api.routes import webui as webui_routes
 from app.core.config import get_settings
 from app.main import app
 from app.schemas.chat import ChatSession
@@ -39,6 +40,14 @@ class FakeRuntimeStore:
     def record_event(self, name: str, payload: object) -> bool:
         self.events.append((name, payload))
         return True
+
+    def list_events(self, *, names: list[str] | None = None, limit: int = 100):
+        selected = [
+            {"id": index + 1, "name": name, "payload": payload, "created_at": "2026-07-04T00:00:00+00:00"}
+            for index, (name, payload) in enumerate(self.events)
+            if names is None or name in names
+        ]
+        return list(reversed(selected[-limit:]))
 
 
 def reset_singletons() -> None:
@@ -117,6 +126,79 @@ def test_conversation_history_endpoint(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json()["items"][0]["session_id"] == "session-1"
     assert response.json()["items"][0]["answer"] == "它正在显示项目代码。"
+
+
+def test_context_status_endpoint(monkeypatch) -> None:
+    class FakeChatService:
+        def context_status(self):
+            return {
+                "model_name": "minicpm-v4.6-f16",
+                "ctx_size": 8192,
+                "estimated_tokens": 2048,
+                "usage_percent": 25.0,
+                "remaining_percent": 75.0,
+                "registered_tool_count": 3,
+            }
+
+    monkeypatch.setattr(assistant_routes, "get_assistant_chat_service", lambda: FakeChatService())
+    client = TestClient(app)
+
+    response = client.get("/api/assistant/context-status")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["model_name"] == "minicpm-v4.6-f16"
+    assert data["usage_percent"] == 25.0
+    assert data["remaining_percent"] == 75.0
+    assert data["registered_tool_count"] == 3
+
+
+def test_pause_and_observe_endpoints_delegate_to_watcher(monkeypatch) -> None:
+    class FakeWatcher:
+        def __init__(self) -> None:
+            self.pause_reasons: list[str | None] = []
+            self.observe_requests = 0
+
+        async def pause(self, *, reason: str | None = None):
+            self.pause_reasons.append(reason)
+
+        def request_observe_once(self, *, resume_after: bool = True):
+            self.observe_requests += 1
+            self.resume_after = resume_after
+
+    watcher = FakeWatcher()
+    monkeypatch.setattr(assistant_routes, "get_window_watcher_service", lambda: watcher)
+    client = TestClient(app)
+
+    pause = client.post("/api/assistant/pause")
+    observe = client.post("/api/assistant/observe")
+
+    assert pause.status_code == 200
+    assert pause.json() == {"running": False}
+    assert watcher.pause_reasons == ["chat-workbench-opened"]
+    assert observe.status_code == 200
+    assert observe.json() == {"started": True, "resume_after": True}
+    assert watcher.observe_requests == 1
+    assert watcher.resume_after is True
+
+
+def test_interaction_traces_endpoint_filters_assistant_trace(monkeypatch) -> None:
+    fake = FakeRuntimeStore()
+    fake.record_event("assistant:interaction_trace", {
+        "session_id": "s1",
+        "stage": "planner_parsed",
+        "payload": {"tool_calls": []},
+    })
+    fake.record_event("assistant:state", {"state": "idle"})
+    monkeypatch.setattr(webui_routes, "get_runtime_store", lambda: fake)
+    client = TestClient(app)
+
+    response = client.get("/api/webui/interaction-traces")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["count"] == 1
+    assert data["items"][0]["payload"]["stage"] == "planner_parsed"
 
 
 def test_assistant_state_service_loads_existing_runtime_state() -> None:

@@ -32,10 +32,17 @@ class Settings(BaseSettings):
     llama_chat_completions_path: str = "/v1/chat/completions"
     llama_startup_timeout_seconds: float = 45.0
     llama_request_timeout_seconds: float = 120.0
-    model_image_long_edge: int = 512
+    model_image_long_edge: int = 1024
+    visual_answer_image_long_edge: int = 1536
     runtime_store_path: Path = PROJECT_ROOT / "backend" / "data" / "runtime" / "runtime.sqlite3"
     window_analysis_prompt_path: Path = (
         PROJECT_ROOT / "experiments" / "prompts" / "analyze_window_v2.txt"
+    )
+    visual_question_answer_prompt_path: Path = (
+        PROJECT_ROOT / "experiments" / "prompts" / "visual_question_answer_v1.txt"
+    )
+    companion_chat_prompt_path: Path = (
+        PROJECT_ROOT / "experiments" / "prompts" / "companion_chat_v1.txt"
     )
     latest_analysis_ttl_seconds: int = 86400
     cors_origins: list[str] = [
@@ -45,12 +52,16 @@ class Settings(BaseSettings):
 
     # --- 模型调用参数（原硬编码于 vision_model_client.py）---
     analyze_temperature: float = 0.1
-    analyze_max_tokens: int = 1200
+    analyze_max_tokens: int = 1800
     answer_temperature: float = 0.2
-    answer_max_tokens: int = 800
+    answer_max_tokens: int = 1200
+    tool_planner_temperature: float = 0.0
+    tool_planner_max_tokens: int = 500
+    agent_tool_call_limit: int = 3
+    interaction_trace_payload_max_chars: int = 20000
 
     # --- 上下文窗口（原硬编码于 assistant_chat.py / vision_model_client.py）---
-    chat_history_turns: int = 6
+    chat_history_turns: int = 4
     chat_history_question_max_chars: int = 500
     chat_history_answer_max_chars: int = 800
     history_retention_limit: int = 30
@@ -58,12 +69,12 @@ class Settings(BaseSettings):
 
     # --- 窗口摘要历史（识图摘要存档，供对话 agent 检索）---
     window_summary_history_limit: int = 30
-    window_summary_retrieve_count: int = 5
+    window_summary_retrieve_count: int = 3
 
     # --- 记忆系统（原硬编码于 memory.py / assistant_chat.py）---
     memory_enabled: bool = True
     memory_max_items: int = 40
-    memory_retrieve_count: int = 4
+    memory_retrieve_count: int = 3
     memory_item_max_chars: int = 220
 
     # --- 性格与人设（新增，用于上下文管理）---
@@ -84,6 +95,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_prefix="LWC_",
         extra="ignore",
+        protected_namespaces=("settings_",),
     )
 
 

@@ -36,6 +36,15 @@ class WindowAnalysis(BaseModel):
     key_points: list[str]
     candidate_questions: list[CandidateQuestion]
     caution: str | None = None
+    uncertain_areas: list[str] = Field(default_factory=list)
+
+
+class VisionInput(BaseModel):
+    """送入模型的图片元信息，用于调试与追溯。"""
+    original_size: list[int] = Field(default_factory=list, description="[width, height] 原图像素")
+    sent_size: list[int] = Field(default_factory=list, description="[width, height] 缩放后送入模型的像素")
+    long_edge: int = 0
+    detail_mode: str = ""
 
 
 class WindowAnalysisResult(BaseModel):
@@ -45,6 +54,7 @@ class WindowAnalysisResult(BaseModel):
     latency_ms: int
     model_endpoint: str
     analyzed_at: datetime | None = None
+    vision_input: VisionInput | None = None
 
 
 class ModelRuntimeInfo(BaseModel):

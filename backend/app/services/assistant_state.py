@@ -9,7 +9,21 @@ from app.schemas.assistant import AssistantState, AssistantStateResponse
 from app.services.runtime_store import RuntimeStore, get_runtime_store
 
 
-VALID_STATES: set[str] = {"idle", "observing", "analyzing", "privacy", "error"}
+VALID_STATES: set[str] = {
+    "idle",
+    "observing",
+    "analyzing",
+    "privacy",
+    "error",
+    # Ambient Companion 情感状态
+    "present",
+    "curious",
+    "focused",
+    "waiting",
+    "concerned",
+    "cheering",
+    "work_lens",
+}
 
 
 class AssistantStateService:

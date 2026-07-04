@@ -12,6 +12,7 @@ from PIL import ImageGrab
 
 from app.core.config import get_settings
 from app.schemas.window import ForegroundWindowInfo, RawWindowCapture, WindowBounds
+from app.services.local_copilot_identity import is_local_copilot_window
 
 
 if not sys.platform.startswith("win"):
@@ -25,10 +26,19 @@ PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
 user32.GetForegroundWindow.argtypes = []
 user32.GetForegroundWindow.restype = wintypes.HWND
+WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+user32.EnumWindows.argtypes = [WNDENUMPROC, wintypes.LPARAM]
+user32.EnumWindows.restype = wintypes.BOOL
+user32.IsWindowVisible.argtypes = [wintypes.HWND]
+user32.IsWindowVisible.restype = wintypes.BOOL
+user32.IsIconic.argtypes = [wintypes.HWND]
+user32.IsIconic.restype = wintypes.BOOL
 user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
 user32.GetWindowTextLengthW.restype = ctypes.c_int
 user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 user32.GetWindowTextW.restype = ctypes.c_int
+user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+user32.GetClassNameW.restype = ctypes.c_int
 user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
 user32.GetWindowRect.restype = wintypes.BOOL
 user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
@@ -51,6 +61,10 @@ class WindowCaptureError(RuntimeError):
     pass
 
 
+IGNORED_SHELL_CLASS_NAMES = {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"}
+MIN_CAPTURE_SIZE = 80
+
+
 class WindowCaptureService:
     def __init__(self, capture_dir: Path) -> None:
         self.capture_dir = capture_dir
@@ -59,6 +73,7 @@ class WindowCaptureService:
         hwnd = user32.GetForegroundWindow()
         if not hwnd:
             raise WindowCaptureError("No foreground window found.")
+        hwnd = self._resolve_capture_window(hwnd)
 
         title = self._get_window_title(hwnd)
         bounds = self._get_window_bounds(hwnd)
@@ -100,6 +115,47 @@ class WindowCaptureService:
             captured_at=captured_at,
         )
 
+    def _resolve_capture_window(self, hwnd: int) -> int:
+        if not self._should_ignore_window(hwnd):
+            return hwnd
+        replacement = self._find_top_capture_window(excluded_hwnd=int(hwnd))
+        if replacement is None:
+            raise WindowCaptureError("No capturable foreground window outside Local Window Copilot.")
+        return replacement
+
+    def _find_top_capture_window(self, *, excluded_hwnd: int | None = None) -> int | None:
+        found: list[int] = []
+
+        def enum_proc(hwnd: int, _lparam: int) -> bool:
+            if excluded_hwnd is not None and int(hwnd) == excluded_hwnd:
+                return True
+            if self._is_capture_candidate(hwnd):
+                found.append(int(hwnd))
+                return False
+            return True
+
+        callback = WNDENUMPROC(enum_proc)
+        user32.EnumWindows(callback, 0)
+        return found[0] if found else None
+
+    def _is_capture_candidate(self, hwnd: int) -> bool:
+        if self._should_ignore_window(hwnd):
+            return False
+        try:
+            bounds = self._get_window_bounds(hwnd)
+        except Exception:
+            return False
+        return bounds.width >= MIN_CAPTURE_SIZE and bounds.height >= MIN_CAPTURE_SIZE
+
+    def _should_ignore_window(self, hwnd: int) -> bool:
+        if not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd):
+            return True
+        class_name = self._get_window_class(hwnd)
+        if class_name in IGNORED_SHELL_CLASS_NAMES:
+            return True
+        title = self._get_window_title(hwnd)
+        return is_local_copilot_window(class_name=class_name, title=title)
+
     @staticmethod
     def _get_window_title(hwnd: int) -> str:
         length = user32.GetWindowTextLengthW(hwnd)
@@ -108,6 +164,12 @@ class WindowCaptureService:
         buffer = ctypes.create_unicode_buffer(length + 1)
         user32.GetWindowTextW(hwnd, buffer, length + 1)
         return buffer.value
+
+    @staticmethod
+    def _get_window_class(hwnd: int) -> str:
+        buffer = ctypes.create_unicode_buffer(256)
+        length = user32.GetClassNameW(hwnd, buffer, len(buffer))
+        return buffer.value if length > 0 else ""
 
     @staticmethod
     def _get_window_bounds(hwnd: int) -> WindowBounds:

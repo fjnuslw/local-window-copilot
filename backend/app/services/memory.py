@@ -97,6 +97,24 @@ class MemoryService:
         self._append_item(item)
         return item
 
+    def remember_note(
+        self,
+        *,
+        note: str,
+        observation_id: str | None = None,
+        tags: list[str] | None = None,
+    ) -> MemoryItem:
+        item = MemoryItem(
+            scope="session",
+            kind="user_note",
+            text=note.strip(),
+            tags=tags or ["note"],
+            confidence=0.95,
+            source_observation_id=observation_id,
+        )
+        self._append_item(item)
+        return item
+
     def retrieve_for_observation(
         self,
         observation: ObservationCard | None,

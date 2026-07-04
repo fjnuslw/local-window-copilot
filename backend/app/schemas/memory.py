@@ -15,6 +15,7 @@ MemoryKind = Literal[
     "analysis_summary",
     "user_question",
     "assistant_answer",
+    "user_note",
 ]
 
 

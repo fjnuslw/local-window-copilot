@@ -149,3 +149,48 @@ async def test_watcher_analyzes_same_window_when_screenshot_changes(tmp_path) ->
 
     assert analysis_service.captures == [first, second]
     assert watcher.status().analyses_count == 2
+
+
+@pytest.mark.anyio
+async def test_watcher_manual_observe_once_without_starting_auto_loop(tmp_path) -> None:
+    capture = make_capture(tmp_path)
+    analysis_service = FakeAnalysisService()
+    state_service = FakeStateService()
+    watcher = WindowWatcherService(
+        capture_service=FakeCaptureService(capture),
+        analysis_service=analysis_service,
+        state_service=state_service,
+        interval_seconds=1.0,
+        capture_min_interval_seconds=10.0,
+        analysis_min_interval_seconds=10.0,
+    )
+
+    await watcher.observe_once_now()
+
+    assert watcher.status().running is False
+    assert watcher.status().captures_count == 1
+    assert watcher.status().analyses_count == 1
+    assert analysis_service.captures == [capture]
+    assert state_service.states == [
+        ("observing", "window-watch-manual-capture-started"),
+        ("analyzing", "window-watch-manual-analysis-started"),
+        ("idle", "window-watch-manual-analysis-finished"),
+    ]
+
+
+@pytest.mark.anyio
+async def test_watcher_manual_observe_once_can_resume_auto_loop(tmp_path) -> None:
+    capture = make_capture(tmp_path)
+    watcher = WindowWatcherService(
+        capture_service=FakeCaptureService(capture),
+        analysis_service=FakeAnalysisService(),
+        state_service=FakeStateService(),
+        interval_seconds=1.0,
+        capture_min_interval_seconds=10.0,
+        analysis_min_interval_seconds=10.0,
+    )
+
+    await watcher.observe_once_now(resume_after=True)
+
+    assert watcher.status().running is True
+    await watcher.stop()

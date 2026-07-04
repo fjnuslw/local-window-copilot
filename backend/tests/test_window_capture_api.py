@@ -9,6 +9,7 @@ from app.api.routes import window as window_routes
 from app.core.config import get_settings
 from app.main import app
 from app.services.assistant_state import get_assistant_state_service
+from app.services.window_capture import is_local_copilot_window
 from app.schemas.window import RawWindowCapture, WindowBounds, WindowWatchStatus
 
 
@@ -113,3 +114,26 @@ def test_window_watch_endpoints_start_report_and_stop(monkeypatch) -> None:
     stop = client.post("/api/window/watch/stop")
     assert stop.status_code == 200
     assert stop.json()["running"] is False
+
+
+def test_local_copilot_windows_are_excluded_from_capture_targets() -> None:
+    assert is_local_copilot_window(
+        class_name="LocalWindowAwareFloatingAssistant",
+        title="任意标题",
+    )
+    assert is_local_copilot_window(
+        class_name="OtherClass",
+        title="Floating Assistant",
+    )
+    assert is_local_copilot_window(
+        class_name="OtherClass",
+        title="Floating Chat",
+    )
+    assert is_local_copilot_window(
+        class_name="OtherClass",
+        title="AlertWindow",
+    )
+    assert not is_local_copilot_window(
+        class_name="ConsoleWindowClass",
+        title="uvicorn app.main:app",
+    )

@@ -19,7 +19,15 @@ from app.services.window_summary_store import (
 )
 
 
-class WindowAnalysisService:
+class ObservationAgent:
+    """观察 agent：截图去重 → VLM 详细窗口摘要 → 写 WindowSummaryStore + 记忆。
+
+    职责边界（见 kv_cache_profile_and_agent_split_spec_zh.md §4.1）：
+    - 输入：截图 + ObservationCard
+    - 输出：WindowSummaryRecord
+    - 不生成候选问题，不参与用户多轮对话
+    """
+
     def __init__(
         self,
         *,
@@ -51,7 +59,7 @@ class WindowAnalysisService:
 
         self.runtime_manager.ensure_server_ready()
         started = time.perf_counter()
-        analysis = self.vision_model_client.analyze_image(capture.screenshot_path)
+        analysis, vision_input = self.vision_model_client.analyze_image(capture.screenshot_path)
         latency_ms = int((time.perf_counter() - started) * 1000)
         result = WindowAnalysisResult(
             capture=capture,
@@ -60,6 +68,7 @@ class WindowAnalysisService:
             latency_ms=latency_ms,
             model_endpoint=self.vision_model_client.endpoint,
             analyzed_at=datetime.now(UTC),
+            vision_input=vision_input,
         )
         self._latest = result
         self._write_latest(result)
@@ -69,6 +78,8 @@ class WindowAnalysisService:
                 window_type=analysis.window_type,
                 summary=analysis.summary,
                 key_points=analysis.key_points,
+                capture=capture,
+                vision_input=vision_input,
             )
         if observation is not None and self.memory_service is not None:
             self.memory_service.save_observation(observation)
@@ -131,9 +142,9 @@ class WindowAnalysisService:
 
 
 @lru_cache
-def get_window_analysis_service() -> WindowAnalysisService:
+def get_window_analysis_service() -> ObservationAgent:
     settings = get_settings()
-    return WindowAnalysisService(
+    return ObservationAgent(
         runtime_manager=get_model_runtime_manager(),
         vision_model_client=get_vision_model_client(),
         runtime_store=get_runtime_store(),
