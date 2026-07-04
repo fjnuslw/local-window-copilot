@@ -1,5 +1,7 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
 from collections.abc import Callable
 from typing import Any, Iterator
@@ -7,6 +9,7 @@ from typing import Any, Iterator
 from app.core.config import get_settings
 from app.schemas.chat import ChatSession
 from app.services.agent_tools import (
+    AGENT_TOOL_NAMES,
     AgentToolCall,
     AgentToolContext,
     AgentToolRegistry,
@@ -169,7 +172,7 @@ class AgentOrchestrator:
         return AgentPlan(tool_calls=calls, raw_text=raw_text)
 
     def _parse_tool_name_plan(self, raw_text: str, question: str) -> list[AgentToolCall]:
-        tool = _normalize_tool_name(raw_text)
+        tool = _normalize_tool_name(raw_text, ("none", *AGENT_TOOL_NAMES))
         if tool == "none":
             return []
         if tool == "screen.look":
@@ -181,7 +184,7 @@ class AgentOrchestrator:
         else:
             raise ValueError(
                 "Tool planner returned invalid tool name. "
-                "Expected screen.look, memory.search, memory.remember, or none. "
+                f"Expected one of: {', '.join(('none', *AGENT_TOOL_NAMES))}. "
                 f"Raw: {raw_text[:120]}"
             )
         return self.registry.validate_calls([
@@ -275,6 +278,7 @@ def _direct_screen_answer(tool_results: list[AgentToolResult]) -> str | None:
         return body or None
     return None
 
+
 def build_tool_answer_messages(
     *,
     question: str,
@@ -322,7 +326,30 @@ def build_tool_answer_messages(
     return messages
 
 
-def _normalize_tool_name(raw_text: str) -> str:
+def _normalize_tool_name(raw_text: str, allowed_tool_names: tuple[str, ...]) -> str:
+    text = _strip_planner_markup(raw_text)
+    if text in allowed_tool_names:
+        return text
+
+    json_tool = _tool_name_from_json(text, allowed_tool_names)
+    if json_tool is not None:
+        return json_tool
+
+    matches = _tool_names_in_text(text, allowed_tool_names)
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ValueError(
+            "Tool planner returned multiple tool names. "
+            f"Expected exactly one of: {', '.join(allowed_tool_names)}. "
+            f"Raw: {raw_text[:120]}"
+        )
+
+    first_line = text.splitlines()[0].strip() if text else ""
+    return first_line.strip().strip('"').strip("'").strip("`").strip()
+
+
+def _strip_planner_markup(raw_text: str) -> str:
     text = raw_text.strip()
     if text.startswith("```"):
         lines = [
@@ -330,11 +357,58 @@ def _normalize_tool_name(raw_text: str) -> str:
             for line in text.splitlines()
             if line.strip() and not line.strip().startswith("```")
         ]
-        text = lines[0] if lines else ""
-    text = text.strip().strip('"').strip("'").strip("`").strip()
-    first_line = text.splitlines()[0].strip() if text else ""
-    first_line = first_line.strip().strip('"').strip("'").strip("`").strip()
-    return first_line
+        if lines and lines[0].lower() in {"json", "text", "txt"}:
+            lines = lines[1:]
+        text = "\n".join(lines)
+    return text.strip().strip('"').strip("'").strip("`").strip()
+
+
+def _tool_name_from_json(text: str, allowed_tool_names: tuple[str, ...]) -> str | None:
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    matches = _tool_names_in_json_value(value, allowed_tool_names)
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ValueError(
+            "Tool planner returned multiple tool names in JSON. "
+            f"Expected exactly one of: {', '.join(allowed_tool_names)}."
+        )
+    return None
+
+
+def _tool_names_in_json_value(
+    value: Any,
+    allowed_tool_names: tuple[str, ...],
+) -> list[str]:
+    if isinstance(value, str):
+        return _tool_names_in_text(value, allowed_tool_names)
+    if isinstance(value, dict):
+        matches: list[str] = []
+        for item in value.values():
+            matches.extend(_tool_names_in_json_value(item, allowed_tool_names))
+        return list(dict.fromkeys(matches))
+    if isinstance(value, list):
+        matches = []
+        for item in value:
+            matches.extend(_tool_names_in_json_value(item, allowed_tool_names))
+        return list(dict.fromkeys(matches))
+    return []
+
+
+def _tool_names_in_text(text: str, allowed_tool_names: tuple[str, ...]) -> list[str]:
+    matches: list[str] = []
+    for tool_name in allowed_tool_names:
+        pattern = (
+            r"(?<![A-Za-z0-9_.-])"
+            + re.escape(tool_name)
+            + r"(?![A-Za-z0-9_.-])"
+        )
+        if re.search(pattern, text):
+            matches.append(tool_name)
+    return matches
 
 
 def _forced_tool_for_question(question: str) -> str | None:

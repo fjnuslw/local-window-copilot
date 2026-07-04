@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
@@ -323,6 +323,34 @@ async def test_chat_specific_content_followup_uses_direct_visual_answer(tmp_path
         if name == "assistant:interaction_trace"
     ]
     assert "direct_visual_answer" in stages
+
+@pytest.mark.anyio
+async def test_chat_accepts_prefixed_planner_tool_name(tmp_path, monkeypatch) -> None:
+    screenshot = tmp_path / "capture.png"
+    screenshot.write_bytes(b"fake-image")
+    runtime_store = FakeRuntimeStore()
+    watcher = FakeWatcher()
+    state = FakeStateService()
+    vision = FakeVisionClient("current_step screen.look")
+    monkeypatch.setattr(chat_module, "get_window_watcher_service", lambda: watcher)
+    monkeypatch.setattr(chat_module, "get_assistant_state_service", lambda: state)
+
+    service = ChatAgent(
+        runtime_store=runtime_store,
+        analysis_service=FakeAnalysisService(screenshot_path=screenshot),
+        vision_model_client=vision,
+    )
+
+    await service.ask("当前进行到哪一步了")
+    await asyncio.sleep(0.1)
+
+    assert vision.plan_calls, "非高置信视觉问题应仍先经过 planner"
+    assert vision.visual_calls, "解析出 screen.look 后应执行视觉工具"
+    assert vision.calls == []
+    current = service.current()
+    assert current is not None
+    assert current.answer == "视觉回答第一段，视觉回答第二段。"
+    assert current.status == "done"
 
 @pytest.mark.anyio
 async def test_chat_text_question_still_uses_stream_chat(monkeypatch) -> None:
