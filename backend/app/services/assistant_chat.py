@@ -5,7 +5,10 @@ import base64
 import binascii
 import hashlib
 import json
+import queue
+import threading
 import uuid
+from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
@@ -115,6 +118,78 @@ class ChatAgent:
         asyncio.create_task(self._answer(session), name="assistant-chat-answer")
         return session
 
+    async def ask_stream(
+        self,
+        question: str,
+        *,
+        image_base64: str | None = None,
+        image_name: str | None = None,
+        image_mime: str | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        user_image_path, stored_image_name = self._save_user_image(
+            image_base64=image_base64,
+            image_name=image_name,
+            image_mime=image_mime,
+        )
+        self._archive_finished_current()
+        await get_window_watcher_service().stop()
+        await get_assistant_state_service().set_state(
+            "analyzing",
+            reason="user-question-started",
+        )
+        now = datetime.now(UTC)
+        session = ChatSession(
+            session_id=uuid.uuid4().hex,
+            question=question.strip(),
+            image_path=str(user_image_path) if user_image_path is not None else None,
+            image_name=stored_image_name,
+            created_at=now,
+            updated_at=now,
+        )
+        self._save(session)
+
+        events: queue.Queue[tuple[str, Any]] = queue.Queue()
+
+        def emit(event: str, data: Any) -> None:
+            events.put((event, data))
+
+        def worker() -> None:
+            try:
+                latest = self.analysis_service.get_latest()
+                self._prepare_answer_session(session, latest)
+                self._stream_model_answer(
+                    session,
+                    latest,
+                    on_chunk=lambda chunk: emit("delta", {"text": chunk}),
+                )
+                emit("done", session.model_dump(mode="json"))
+            except Exception as exc:
+                session.status = "error"
+                session.error = str(exc)
+                session.updated_at = datetime.now(UTC)
+                self._save(session)
+                self._trace(session, "session_error", {"error": str(exc)})
+                self._append_history(session)
+                emit("error", {"error": str(exc), "session": session.model_dump(mode="json")})
+            finally:
+                emit("end", None)
+
+        thread = threading.Thread(target=worker, name="assistant-chat-stream-answer", daemon=True)
+        thread.start()
+        yield {"event": "session", "data": session.model_dump(mode="json")}
+
+        try:
+            while True:
+                event, data = await asyncio.to_thread(events.get)
+                if event == "end":
+                    break
+                yield {"event": event, "data": data}
+        finally:
+            await get_assistant_state_service().set_state(
+                "idle",
+                reason="user-question-finished",
+            )
+
     def _save_user_image(
         self,
         *,
@@ -187,44 +262,8 @@ class ChatAgent:
 
     async def _answer(self, session: ChatSession) -> None:
         try:
-            settings = get_settings()
             latest = self.analysis_service.get_latest()
-            self._trace(
-                session,
-                "session_started",
-                {
-                    "question": session.question,
-                    "latest_present": latest is not None,
-                    "user_image": (
-                        {"path": session.image_path, "name": session.image_name}
-                        if session.image_path
-                        else None
-                    ),
-                    "latest_window": (
-                        {
-                            "app_name": latest.capture.app_name,
-                            "window_title": latest.capture.window_title,
-                            "window_type": latest.analysis.window_type,
-                            "screenshot_path": str(latest.capture.screenshot_path),
-                        }
-                        if latest
-                        else None
-                    ),
-                },
-            )
-
-            # 记录用户最近目标和困惑（spec §6.2）
-            self._record_user_goal(session.question)
-
-            if settings.memory_enabled and self.memory_service is not None:
-                self.memory_service.remember_user_question(
-                    question=session.question,
-                    observation_id=(
-                        latest.observation.observation_id
-                        if latest and latest.observation
-                        else None
-                    ),
-                )
+            self._prepare_answer_session(session, latest)
             await asyncio.to_thread(self._stream_model_answer, session, latest)
         except Exception as exc:
             session.status = "error"
@@ -239,7 +278,49 @@ class ChatAgent:
                 reason="user-question-finished",
             )
 
-    def _stream_model_answer(self, session: ChatSession, latest) -> None:
+    def _prepare_answer_session(self, session: ChatSession, latest) -> None:
+        settings = get_settings()
+        self._trace(
+            session,
+            "session_started",
+            {
+                "question": session.question,
+                "latest_present": latest is not None,
+                "user_image": (
+                    {"path": session.image_path, "name": session.image_name}
+                    if session.image_path
+                    else None
+                ),
+                "latest_window": (
+                    {
+                        "app_name": latest.capture.app_name,
+                        "window_title": latest.capture.window_title,
+                        "window_type": latest.analysis.window_type,
+                        "screenshot_path": str(latest.capture.screenshot_path),
+                    }
+                    if latest
+                    else None
+                ),
+            },
+        )
+        self._record_user_goal(session.question)
+        if settings.memory_enabled and self.memory_service is not None:
+            self.memory_service.remember_user_question(
+                question=session.question,
+                observation_id=(
+                    latest.observation.observation_id
+                    if latest and latest.observation
+                    else None
+                ),
+            )
+
+    def _stream_model_answer(
+        self,
+        session: ChatSession,
+        latest,
+        *,
+        on_chunk: Callable[[str], None] | None = None,
+    ) -> None:
         settings = get_settings()
         history_summaries: list[dict[str, Any]] = []
         if self.window_summary_store is not None:
@@ -294,8 +375,13 @@ class ChatAgent:
             )
             for chunk in chunks:
                 self._append(session, chunk)
+                if on_chunk is not None:
+                    on_chunk(chunk)
         except ValueError as exc:
-            self._append(session, f"工具规划失败：{exc}", done=True)
+            message = f"工具规划失败：{exc}"
+            self._append(session, message, done=True)
+            if on_chunk is not None:
+                on_chunk(message)
             self._trace(session, "planner_error", {"error": str(exc)})
             return
         session.status = "done"

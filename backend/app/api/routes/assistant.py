@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -57,6 +59,38 @@ async def ask_question(payload: ChatQuestionRequest) -> ChatSession:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+
+
+def _sse_event(event: str, data: object) -> str:
+    return (
+        f"event: {event}\n"
+        f"data: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
+    )
+
+
+@router.post("/questions/stream")
+async def ask_question_stream(payload: ChatQuestionRequest) -> StreamingResponse:
+    async def stream():
+        try:
+            async for item in get_assistant_chat_service().ask_stream(
+                payload.question,
+                image_base64=payload.image_base64,
+                image_name=payload.image_name,
+                image_mime=payload.image_mime,
+            ):
+                yield _sse_event(str(item.get("event") or "message"), item.get("data"))
+        except ValueError as exc:
+            yield _sse_event("error", {"error": str(exc)})
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 @router.get("/conversation", response_model=ChatSession | None)
 def current_conversation() -> ChatSession | None:

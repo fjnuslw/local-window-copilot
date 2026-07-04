@@ -16,7 +16,6 @@ from app.core.config import get_settings
 from app.schemas.analyze import VisionInput, WindowAnalysis
 from app.schemas.chat import ChatSession
 from app.schemas.memory import MemoryItem
-from app.services.dialogue_context import build_dialogue_bridge
 from app.services.local_copilot_identity import (
     is_local_copilot_title,
     mentions_local_copilot,
@@ -490,9 +489,6 @@ def build_companion_messages(
                 + "\n".join(lines),
             })
     # [3..] dialogue_tail（多轮历史 + 当前问题，不注入窗口观察）
-    bridge = build_dialogue_bridge(question, chat_history)
-    effective_question = bridge.effective_question if bridge is not None else question
-
     if chat_history:
         for session in chat_history:
             q = session.question.strip()
@@ -502,16 +498,7 @@ def build_companion_messages(
             if q and a and session.status in {"done"}:
                 messages.append({"role": "user", "content": q[:question_max_chars]})
                 messages.append({"role": "assistant", "content": a[:answer_max_chars]})
-    if bridge is not None:
-        messages.append({"role": "user", "content": bridge.message})
-        messages.append({
-            "role": "user",
-            "content": "请直接继续本轮实际任务："
-            + effective_question
-            + "\n不要反问用户是否需要继续，直接往下说。",
-        })
-    else:
-        messages.append({"role": "user", "content": question})
+    messages.append({"role": "user", "content": question})
     return messages
 
 

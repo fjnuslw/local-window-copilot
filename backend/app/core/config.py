@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     )
     minicpm_model_name: str = "minicpm-v4.6-f16"
     minicpm_ctx_size: int = 8192
+    minicpm_reasoning: str = "on"
+    minicpm_reasoning_format: str = "deepseek"
+    minicpm_reasoning_budget: int = 512
     llama_server_host: str = "127.0.0.1"
     llama_server_port: int = 18181
     llama_chat_completions_path: str = "/v1/chat/completions"

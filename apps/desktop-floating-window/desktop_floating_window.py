@@ -25,6 +25,7 @@ PROJECT_ROOT = APP_DIR.parents[1]
 ASSET_DIR = PROJECT_ROOT / "assets" / "mascot" / "rive_import"
 BACKEND_BASE_URL = "http://127.0.0.1:18080"
 BACKEND_TIMEOUT_SECONDS = 0.8
+BACKEND_STREAM_TIMEOUT_SECONDS = 240
 STATE_POLL_SECONDS = 0.5
 ANALYSIS_POLL_SECONDS = 1.0
 CHAT_POLL_SECONDS = 0.75
@@ -663,6 +664,137 @@ class FloatingAssistantWindow:
         except (UnicodeDecodeError, json.JSONDecodeError):
             return None
 
+    def _request_sse_async(
+        self,
+        key: str,
+        path: str,
+        payload: dict[str, object],
+        *,
+        on_event: Callable[[str, object], None],
+        on_error: Callable[[str], None] | None = None,
+    ) -> None:
+        with self._request_lock:
+            if key in self._inflight_requests:
+                return
+            self._inflight_requests.add(key)
+        thread = threading.Thread(
+            target=self._request_sse_worker,
+            args=(key, path, payload, on_event, on_error),
+            daemon=True,
+        )
+        thread.start()
+
+    def _request_sse_worker(
+        self,
+        key: str,
+        path: str,
+        payload: dict[str, object],
+        on_event: Callable[[str, object], None],
+        on_error: Callable[[str], None] | None,
+    ) -> None:
+        url = f"{BACKEND_BASE_URL}{path}"
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = request.Request(
+            url,
+            data=body,
+            headers={
+                "Accept": "text/event-stream",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        event_name = "message"
+        data_lines: list[str] = []
+
+        def dispatch() -> None:
+            nonlocal event_name, data_lines
+            if not data_lines:
+                event_name = "message"
+                return
+            data_text = "\n".join(data_lines)
+            try:
+                data: object = json.loads(data_text)
+            except json.JSONDecodeError:
+                data = data_text
+            on_event(event_name, data)
+            event_name = "message"
+            data_lines = []
+
+        try:
+            with request.urlopen(req, timeout=BACKEND_STREAM_TIMEOUT_SECONDS) as response:
+                for raw_line in response:
+                    line = raw_line.decode("utf-8", errors="ignore").rstrip("\r\n")
+                    if not line:
+                        dispatch()
+                        continue
+                    if line.startswith("event:"):
+                        event_name = line.removeprefix("event:").strip() or "message"
+                    elif line.startswith("data:"):
+                        data_lines.append(line.removeprefix("data:").strip())
+                dispatch()
+        except (OSError, error.URLError, TimeoutError) as exc:
+            if on_error is not None:
+                on_error(str(exc))
+        finally:
+            with self._request_lock:
+                self._inflight_requests.discard(key)
+
+    def _apply_question_stream_event(self, event: str, data: object) -> None:
+        if event == "session" and isinstance(data, dict):
+            self.conversation = data
+            self._last_conversation_status = str(data.get("status") or "streaming")
+            self._chat_auto_scroll = True
+            self._chat_dirty = True
+            return
+        if event == "delta":
+            text = ""
+            if isinstance(data, dict):
+                text = str(data.get("text") or "")
+            elif isinstance(data, str):
+                text = data
+            if text:
+                if not isinstance(self.conversation, dict):
+                    self.conversation = {"question": self.chat_question, "answer": "", "status": "streaming"}
+                self.conversation["answer"] = str(self.conversation.get("answer") or "") + text
+                self.conversation["status"] = "streaming"
+                self._last_conversation_status = "streaming"
+                self._chat_auto_scroll = True
+                self._chat_dirty = True
+            return
+        if event == "done" and isinstance(data, dict):
+            self.chat_stream_active = False
+            self._apply_conversation(data)
+            self._poll_chat_history(force=True)
+            self.set_state("idle")
+            return
+        if event == "error":
+            self.chat_stream_active = False
+            error_text = "流式回答失败"
+            if isinstance(data, dict):
+                error_text = str(data.get("error") or error_text)
+                session = data.get("session")
+                if isinstance(session, dict):
+                    self.conversation = session
+            if not isinstance(self.conversation, dict):
+                self.conversation = {"question": "", "answer": "", "status": "error"}
+            if not str(self.conversation.get("answer") or ""):
+                self.conversation["answer"] = error_text
+            self.conversation["status"] = "error"
+            self._last_conversation_status = "error"
+            self._chat_dirty = True
+            self._poll_chat_history(force=True)
+            self.set_state("idle")
+
+    def _apply_question_stream_error(self, message: str) -> None:
+        self.chat_stream_active = False
+        if not isinstance(self.conversation, dict):
+            self.conversation = {"question": "", "answer": "", "status": "error"}
+        self.conversation["answer"] = message or "流式连接失败"
+        self.conversation["status"] = "error"
+        self._last_conversation_status = "error"
+        self.set_state("idle")
+        self._chat_dirty = True
+
     def _should_show_panel(self) -> bool:
         # Ambient Companion：主窗只承担存在感和入口，不再默认展示观察面板。
         # 始终显示轻量入口按钮，观察内容移入对话工作台和 Work Lens。
@@ -1107,18 +1239,20 @@ class FloatingAssistantWindow:
         payload: dict[str, object] = {"question": question}
         if image_payload is not None:
             payload.update(image_payload)
-        self._request_json_async(
-            "ask-question",
-            "POST",
-            "/api/assistant/questions",
+        self.chat_stream_active = True
+        self._request_sse_async(
+            "ask-question-stream",
+            "/api/assistant/questions/stream",
             payload,
-            on_success=self._apply_conversation,
+            on_event=self._apply_question_stream_event,
+            on_error=self._apply_question_stream_error,
         )
         self.render()
         self.render_chat()
 
     def _resume_auto_watch(self) -> None:
         self._request_json_async("resume", "POST", "/api/assistant/resume")
+        self.chat_stream_active = False
         self.conversation = None
         self._last_conversation_status = None
         self.set_state("idle")
@@ -1137,6 +1271,7 @@ class FloatingAssistantWindow:
         self.chat_visible = False
         self.chat_input_focused = False
         self.chat_scroll_drag = None
+        self.chat_stream_active = False
         self.conversation = None
         self._last_conversation_status = None
         self.set_state("observing")

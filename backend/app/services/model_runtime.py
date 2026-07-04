@@ -26,6 +26,9 @@ class ModelRuntimeManager:
         ctx_size: int,
         endpoint_path: str,
         startup_timeout_seconds: float,
+        reasoning: str,
+        reasoning_format: str,
+        reasoning_budget: int,
     ) -> None:
         self.server_exe = server_exe
         self.model_path = model_path
@@ -35,6 +38,9 @@ class ModelRuntimeManager:
         self.ctx_size = ctx_size
         self.endpoint_path = endpoint_path
         self.startup_timeout_seconds = startup_timeout_seconds
+        self.reasoning = reasoning
+        self.reasoning_format = reasoning_format
+        self.reasoning_budget = reasoning_budget
         self._process: subprocess.Popen | None = None
 
     @property
@@ -87,7 +93,11 @@ class ModelRuntimeManager:
             "--gpu-layers",
             "all",
             "--reasoning",
-            "off",
+            self.reasoning,
+            "--reasoning-format",
+            self.reasoning_format,
+            "--reasoning-budget",
+            str(self.reasoning_budget),
             "--host",
             self.host,
             "--port",
@@ -125,4 +135,7 @@ def get_model_runtime_manager() -> ModelRuntimeManager:
         ctx_size=settings.minicpm_ctx_size,
         endpoint_path=settings.llama_chat_completions_path,
         startup_timeout_seconds=settings.llama_startup_timeout_seconds,
+        reasoning=settings.minicpm_reasoning,
+        reasoning_format=settings.minicpm_reasoning_format,
+        reasoning_budget=settings.minicpm_reasoning_budget,
     )

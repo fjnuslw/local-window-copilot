@@ -52,6 +52,9 @@ FIELD_META: list[dict[str, Any]] = [
     {"key": "tool_planner_temperature", "group": "model", "label": "工具规划温度", "type": "number", "advanced": True, "description": "工具规划器采样温度，默认 0，越低越稳定"},
     {"key": "tool_planner_max_tokens", "group": "model", "label": "工具规划 token", "type": "number", "advanced": True, "description": "工具规划器输出 JSON 的最大 token 数"},
     {"key": "minicpm_ctx_size", "group": "model", "label": "模型上下文长度", "type": "number", "advanced": True, "description": "llama-server 启动时的 ctx_size（改后需重启后端生效）"},
+    {"key": "minicpm_reasoning", "group": "model", "label": "模型思考模式", "type": "segmented", "advanced": True, "options": [{"label": "开启", "value": "on"}, {"label": "自动", "value": "auto"}, {"label": "关闭", "value": "off"}], "description": "llama-server reasoning 模式。改后需重启后端和模型服务。"},
+    {"key": "minicpm_reasoning_format", "group": "model", "label": "思考输出格式", "type": "segmented", "advanced": True, "options": [{"label": "deepseek", "value": "deepseek"}, {"label": "none", "value": "none"}, {"label": "legacy", "value": "deepseek-legacy"}], "description": "deepseek 会把思考放到 reasoning_content，避免污染正文。"},
+    {"key": "minicpm_reasoning_budget", "group": "model", "label": "思考 token 预算", "type": "number", "advanced": True, "description": "llama-server --reasoning-budget。默认 512，避免无限思考拖慢桌宠。"},
 
     # --- 高级：上下文窗口 ---
     {"key": "chat_history_question_max_chars", "group": "context", "label": "历史问题截断字数", "type": "number", "advanced": True, "description": "注入历史时每条用户问题的最大字符数"},

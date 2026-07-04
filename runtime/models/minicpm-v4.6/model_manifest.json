@@ -6,7 +6,9 @@
   "language_model": "MiniCPM-V-4_6-F16.gguf",
   "vision_projector": "mmproj-model-f16.gguf",
   "ctx_size": 8192,
-  "reasoning": "off",
+  "reasoning": "on",
+  "reasoning_format": "deepseek",
+  "reasoning_budget": 512,
   "required_llamacpp": "b9049+",
   "files": [
     {

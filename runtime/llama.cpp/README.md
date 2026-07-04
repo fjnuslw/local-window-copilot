@@ -23,7 +23,9 @@ runtime\llama.cpp\llama-server.exe `
   --mmproj runtime\models\minicpm-v4.6\mmproj-model-f16.gguf `
   -c 8192 `
   --gpu-layers all `
-  --reasoning off `
+  --reasoning on `
+  --reasoning-format deepseek `
+  --reasoning-budget 512 `
   --host 127.0.0.1 `
   --port 18181 `
   --no-webui
@@ -43,7 +45,7 @@ runtime\llama.cpp\llama-mtmd-cli.exe `
 
 Notes:
 
-- `llama-server.exe` is the product target because it supports `--reasoning off` and avoids reloading the model for every request.
+- `llama-server.exe` is the product target because it supports `--reasoning on|off|auto`, `--reasoning-format`, and avoids reloading the model for every request.
 - `llama-mtmd-cli.exe` is only for single-image validation; in this local build it does not accept `--reasoning` / `-rea`.
 - FastAPI should resize screenshots before sending them to `llama-server`.
 - Current measured result: server startup to `/health` ready is about 11.62s; a 512px image request is about 2.40s.

@@ -205,12 +205,14 @@ async def test_chat_archives_finished_current_before_new_short_reply(monkeypatch
     assert any(item["session_id"] == "previous-current" for item in history)
     assert vision.plan_calls
     planner_prompt = "\n".join(str(m["content"]) for m in vision.plan_calls[-1])
-    assert "对话承接提示" in planner_prompt
-    assert "不要反问同一个问题" in planner_prompt
+    assert "帮我看看继续问什么比较好" in planner_prompt
+    assert "可以" in planner_prompt
+    assert "对话承接提示" not in planner_prompt
     assert vision.calls
     answer_prompt = "\n".join(str(m["content"]) for m in vision.calls[-1]["messages"])
-    assert "对话承接提示" in answer_prompt
-
+    assert "要不要我帮你分析当前任务进展" in answer_prompt
+    assert "可以" in answer_prompt
+    assert "对话承接提示" not in answer_prompt
 
 @pytest.mark.anyio
 async def test_chat_context_prefers_current_window_metadata_and_filters_pollution(monkeypatch) -> None:

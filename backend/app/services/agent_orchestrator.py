@@ -16,10 +16,6 @@ from app.services.agent_tools import (
     AgentToolResult,
     AgentToolRuntime,
 )
-from app.services.dialogue_context import (
-    build_dialogue_bridge,
-    resolve_effective_question,
-)
 from app.services.local_copilot_identity import mentions_local_copilot
 from app.services.vision_model_client import (
     VisionModelClient,
@@ -27,43 +23,39 @@ from app.services.vision_model_client import (
 )
 
 
-TOOL_PLANNER_SYSTEM_PROMPT = """你是本地桌面伙伴的工具规划器。
-你只负责判断是否需要工具，不负责回答用户。
+DIRECT_ACTION_WORDS = {"answer", "direct_answer", "respond", "reply", "chat", "none", "no_tool"}
 
-可用工具只有：
-screen.look
-memory.search
-memory.remember
-none
+TOOL_PLANNER_SYSTEM_PROMPT = """你是本地桌面伙伴的行动规划模型。
+你会看到注册工具、最近多轮对话、本轮用户输入，以及可选的用户附图。
+你只决定下一步动作，不负责回答用户。
 
-输出要求：
-- 优先只输出一行工具名，例如：screen.look
-- 也可以输出 JSON：{"tool":"screen.look"}
-- 不要输出解释、Markdown、步骤名或自然语言。
+核心原则：
+- 不使用固定短语规则；必须根据完整对话语义判断用户到底在承接什么。
+- 用户说“可以、看吧、继续、行、嗯”等短回复时，结合上一轮助手和用户的真实对话自行判断：直接回答、看屏幕、查记忆、写记忆，或不调用工具。
+- 如果问题需要当前/历史屏幕、页面、窗口、截图、可见文字、按钮、布局或图片细节，调用 screen.look。
+- 如果问题需要过去对话、用户偏好、已有记忆、项目背景或历史窗口索引，调用 memory.search。
+- 只有用户明确要求“记住/以后记得/保存”稳定偏好或事实时，调用 memory.remember。
+- 如果已有知识和对话历史足够，就选择 answer，不要为了显得聪明而调用工具。
+- 最多调用 3 个工具。
 
-判断原则：
-- 用户要求看屏幕、页面、窗口、截图、图片、可见文字、界面细节、画面里的选项，选 screen.look。
-- 用户问过去说过什么、偏好、已有记忆、项目背景、历史窗口记录，选 memory.search。
-- 只有用户明确说“记住/以后记得/保存这个偏好”时，选 memory.remember。
-- 普通陪伴、情绪回应、想法讨论、无需外部上下文的问题，选 none。
-- 如果本轮用户附带了图片，并且问题与这张图有关，选 screen.look。
-- 如果不确定是否需要看图，不要用模板反问；根据用户意图自由选择最有帮助的工具。
-"""
+输出必须是严格 JSON 对象，二选一：
+{"action":"answer","tool_calls":[]}
+{"action":"tools","tool_calls":[{"name":"screen.look","arguments":{"question":"用户真正想看的问题"}}]}
+不要输出 Markdown、解释、步骤名或自然语言。"""
 
 
 TOOL_ANSWER_SYSTEM_PROMPT = """你是用户的本地桌面伙伴。
 你会收到工具执行结果，然后直接回答用户。
 
 原则：
-- 工具已经执行过，不要再要求用户说明“想看什么”。
+- 工具已经执行过，不要复述工具名或接口名。
 - 如果 screen.look 返回了屏幕/图片细看结果，把它当作视觉证据；你负责理解、取舍和回答。
 - 如果用户问“推荐哪个/哪个好看/选哪个/怎么排”，必须给出明确选择和理由；不要只描述页面。
 - 如果用户问具体文字或细节，优先列出能看清的原文、标题、按钮、数字或位置。
 - 如果工具结果说看不清，就明确说看不清，不编造。
 - 不要输出 JSON、日志、工具名或接口名。
 - 不要声称能自动点击、输入或操作电脑。
-- 用中文，自然、简洁、有温度。
-"""
+- 用中文，自然、简洁、有温度。"""
 
 
 @dataclass(frozen=True)
@@ -93,21 +85,11 @@ class AgentOrchestrator:
         trace: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> AgentPlan:
         settings = get_settings()
-        bridge = build_dialogue_bridge(question, chat_history)
-        planning_question = resolve_effective_question(
-            question,
-            chat_history,
+        messages = self._build_planner_messages(
+            question=question,
             user_image_name=user_image_name,
+            chat_history=chat_history,
         )
-        user_lines = ["用户问题：", planning_question]
-        if bridge is not None:
-            user_lines.extend(["", f"用户原始短回复：{question.strip()}", bridge.message])
-        if user_image_name:
-            user_lines.extend(["", f"本轮用户附带图片：{user_image_name}"])
-        messages = [
-            {"role": "system", "content": TOOL_PLANNER_SYSTEM_PROMPT},
-            {"role": "user", "content": "\n".join(user_lines)},
-        ]
         if trace is not None:
             trace("planner_request", {"messages": messages})
         raw_text = self.vision_model_client.complete_chat(
@@ -117,7 +99,7 @@ class AgentOrchestrator:
         )
         if trace is not None:
             trace("planner_raw_response", {"text": raw_text})
-        calls = self._parse_tool_name_plan(raw_text, planning_question)
+        calls = self._parse_tool_name_plan(raw_text, question)
         if trace is not None:
             trace(
                 "planner_parsed",
@@ -130,26 +112,44 @@ class AgentOrchestrator:
             )
         return AgentPlan(tool_calls=calls, raw_text=raw_text)
 
+    def _build_planner_messages(
+        self,
+        *,
+        question: str,
+        user_image_name: str | None,
+        chat_history: list[ChatSession] | None,
+    ) -> list[dict[str, Any]]:
+        messages: list[dict[str, Any]] = [
+            {
+                "role": "system",
+                "content": TOOL_PLANNER_SYSTEM_PROMPT
+                + "\n\n注册工具：\n"
+                + self.registry.manifest_for_prompt(),
+            }
+        ]
+        if chat_history:
+            for session in chat_history:
+                q = session.question.strip()
+                a = session.answer.strip()
+                if not q or not a or session.status != "done":
+                    continue
+                if mentions_local_copilot(q) or mentions_local_copilot(a):
+                    continue
+                messages.append({"role": "user", "content": q})
+                messages.append({"role": "assistant", "content": a})
+        user_lines = ["本轮用户输入：", question.strip()]
+        if user_image_name:
+            user_lines.extend(["", f"本轮用户附图：{user_image_name}"])
+        messages.append({"role": "user", "content": "\n".join(user_lines)})
+        return messages
+
     def _parse_tool_name_plan(self, raw_text: str, question: str) -> list[AgentToolCall]:
-        tool = _normalize_tool_name(raw_text, ("none", *AGENT_TOOL_NAMES))
-        if tool == "none":
-            return []
-        if tool == "screen.look":
-            calls = [AgentToolCall(name=tool, arguments={"question": question})]
-        elif tool == "memory.search":
-            calls = [AgentToolCall(name=tool, arguments={"query": question})]
-        elif tool == "memory.remember":
-            calls = [AgentToolCall(name=tool, arguments={"note": question})]
-        else:
-            raise ValueError(
-                "Tool planner returned invalid tool name. "
-                f"Expected one of: {', '.join(('none', *AGENT_TOOL_NAMES))}. "
-                f"Raw: {raw_text[:120]}"
-            )
-        return self.registry.validate_calls([
-            {"name": call.name, "arguments": call.arguments}
-            for call in calls
-        ])
+        raw_calls = _tool_calls_from_plan_text(
+            raw_text,
+            allowed_tool_names=("none", *AGENT_TOOL_NAMES),
+            default_question=question,
+        )
+        return self.registry.validate_calls(raw_calls)
 
     def stream_answer(
         self,
@@ -231,9 +231,6 @@ def build_tool_answer_messages(
     if packet:
         messages.append({"role": "user", "content": packet})
 
-    bridge = build_dialogue_bridge(question, chat_history)
-    effective_question = bridge.effective_question if bridge is not None else question.strip()
-
     for session in chat_history:
         q = session.question.strip()
         a = session.answer.strip()
@@ -249,9 +246,6 @@ def build_tool_answer_messages(
                 "content": a[: settings.chat_history_answer_max_chars],
             })
 
-    if bridge is not None:
-        messages.append({"role": "user", "content": bridge.message})
-
     result_blocks = []
     for index, result in enumerate(tool_results, start=1):
         status = "ok" if result.ok else "error"
@@ -265,15 +259,236 @@ def build_tool_answer_messages(
             + "\n\n".join(result_blocks),
         }
     )
-    final_task = (
-        "请基于上面的工具证据直接回答本轮实际任务："
-        f"{effective_question}"
+    messages.append(
+        {
+            "role": "user",
+            "content": "请基于上面的工具证据回答本轮用户输入。"
+            "你可以结合前面的多轮对话理解省略和指代；如果证据不足，要明确说明不足。\n"
+            f"本轮用户输入：{question.strip()}",
+        }
     )
-    if effective_question != question.strip():
-        final_task += f"\n用户原始输入：{question.strip()}"
-    final_task += "\n不要反问用户是否需要分析，直接给出结论。"
-    messages.append({"role": "user", "content": final_task})
     return messages
+
+
+def _tool_calls_from_plan_text(
+    raw_text: str,
+    *,
+    allowed_tool_names: tuple[str, ...],
+    default_question: str,
+) -> list[dict[str, Any]]:
+    text = _strip_planner_markup(raw_text)
+    if text.lower() in DIRECT_ACTION_WORDS:
+        return []
+
+    value = _json_value_from_text(text)
+    if value is not None:
+        calls = _tool_calls_from_json_value(
+            value,
+            allowed_tool_names=allowed_tool_names,
+            default_question=default_question,
+        )
+        if calls is not None:
+            return calls
+
+    tool = _normalize_tool_name(text, allowed_tool_names)
+    if tool == "none" or tool.lower() in DIRECT_ACTION_WORDS:
+        return []
+    return [{"name": tool, "arguments": _default_arguments(tool, default_question)}]
+
+
+def _json_value_from_text(text: str) -> Any | None:
+    candidates = [text]
+    extracted = _extract_json_object_from_text(text)
+    if extracted and extracted != text:
+        candidates.append(extracted)
+    for candidate in candidates:
+        try:
+            value = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict) and isinstance(value.get("text"), str):
+            inner = _json_value_from_text(value["text"].strip())
+            return inner if inner is not None else value
+        return value
+    return None
+
+
+def _tool_calls_from_json_value(
+    value: Any,
+    *,
+    allowed_tool_names: tuple[str, ...],
+    default_question: str,
+) -> list[dict[str, Any]] | None:
+    if isinstance(value, str):
+        nested = _json_value_from_text(value.strip())
+        if nested is not None and nested is not value:
+            return _tool_calls_from_json_value(
+                nested,
+                allowed_tool_names=allowed_tool_names,
+                default_question=default_question,
+            )
+        text = value.strip()
+        if text.lower() in DIRECT_ACTION_WORDS:
+            return []
+        tool = _normalize_tool_name(text, allowed_tool_names)
+        if tool == "none" or tool.lower() in DIRECT_ACTION_WORDS:
+            return []
+        return [{"name": tool, "arguments": _default_arguments(tool, default_question)}]
+
+    if isinstance(value, list):
+        return _coerce_tool_call_list(
+            value,
+            allowed_tool_names=allowed_tool_names,
+            default_question=default_question,
+        )
+
+    if not isinstance(value, dict):
+        return None
+
+    if "tool_calls" in value:
+        raw_calls = _parse_maybe_json(value.get("tool_calls"))
+        return _coerce_tool_call_list(
+            raw_calls,
+            allowed_tool_names=allowed_tool_names,
+            default_question=default_question,
+        )
+
+    action = str(value.get("action") or value.get("next") or "").strip().lower()
+    if action in DIRECT_ACTION_WORDS:
+        return []
+
+    if any(key in value for key in ("name", "tool", "function", "function_call")):
+        call = _coerce_single_tool_call(
+            value,
+            allowed_tool_names=allowed_tool_names,
+            default_question=default_question,
+        )
+        return [] if call is None else [call]
+
+    matches = _tool_names_in_json_value(value, allowed_tool_names)
+    if len(matches) == 1:
+        tool = matches[0]
+        if tool == "none":
+            return []
+        return [{"name": tool, "arguments": _default_arguments(tool, default_question)}]
+    if len(matches) > 1:
+        raise ValueError(
+            "Tool planner returned multiple tool names in JSON. "
+            f"Expected exactly one of: {', '.join(allowed_tool_names)}."
+        )
+    return None
+
+
+def _parse_maybe_json(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text:
+        return []
+    parsed = _json_value_from_text(text)
+    return parsed if parsed is not None else value
+
+
+def _coerce_tool_call_list(
+    value: Any,
+    *,
+    allowed_tool_names: tuple[str, ...],
+    default_question: str,
+) -> list[dict[str, Any]]:
+    value = _parse_maybe_json(value)
+    if value in (None, ""):
+        return []
+    if isinstance(value, dict):
+        if _json_has_empty_tool_calls(value):
+            return []
+        call = _coerce_single_tool_call(
+            value,
+            allowed_tool_names=allowed_tool_names,
+            default_question=default_question,
+        )
+        return [] if call is None else [call]
+    if not isinstance(value, list):
+        raise ValueError("tool_calls must be a list.")
+    calls: list[dict[str, Any]] = []
+    for item in value:
+        call = _coerce_single_tool_call(
+            item,
+            allowed_tool_names=allowed_tool_names,
+            default_question=default_question,
+        )
+        if call is not None:
+            calls.append(call)
+    return calls
+
+
+def _coerce_single_tool_call(
+    value: Any,
+    *,
+    allowed_tool_names: tuple[str, ...],
+    default_question: str,
+) -> dict[str, Any] | None:
+    if isinstance(value, str):
+        text = value.strip()
+        if text.lower() in DIRECT_ACTION_WORDS:
+            return None
+        tool = _normalize_tool_name(text, allowed_tool_names)
+        if tool == "none" or tool.lower() in DIRECT_ACTION_WORDS:
+            return None
+        return {"name": tool, "arguments": _default_arguments(tool, default_question)}
+    if not isinstance(value, dict):
+        raise ValueError("Each tool call must be an object.")
+
+    function = value.get("function") if isinstance(value.get("function"), dict) else None
+    function_call = value.get("function_call") if isinstance(value.get("function_call"), dict) else None
+    name_value = (
+        value.get("name")
+        or value.get("tool")
+        or (function or {}).get("name")
+        or (function_call or {}).get("name")
+    )
+    if name_value is None:
+        matches = _tool_names_in_json_value(value, allowed_tool_names)
+        if len(matches) == 1:
+            name_value = matches[0]
+        elif len(matches) > 1:
+            raise ValueError(
+                "Tool planner returned multiple tool names in one call. "
+                f"Expected exactly one of: {', '.join(allowed_tool_names)}."
+            )
+        else:
+            raise ValueError("Each tool call must include a tool name.")
+
+    tool = _normalize_tool_name(str(name_value), allowed_tool_names)
+    if tool == "none" or tool.lower() in DIRECT_ACTION_WORDS:
+        return None
+
+    raw_args = (
+        value.get("arguments")
+        if "arguments" in value
+        else value.get("args")
+        if "args" in value
+        else value.get("parameters")
+    )
+    if raw_args is None and function is not None:
+        raw_args = function.get("arguments") or function.get("parameters")
+    if raw_args is None and function_call is not None:
+        raw_args = function_call.get("arguments") or function_call.get("parameters")
+    raw_args = _parse_maybe_json(raw_args)
+    args = raw_args if isinstance(raw_args, dict) else {}
+
+    merged_args = _default_arguments(tool, default_question)
+    merged_args.update(args)
+    return {"name": tool, "arguments": merged_args}
+
+
+def _default_arguments(tool: str, question: str) -> dict[str, Any]:
+    if tool == "screen.look":
+        return {"question": question}
+    if tool == "memory.search":
+        return {"query": question}
+    if tool == "memory.remember":
+        return {"note": question}
+    return {}
 
 
 def _normalize_tool_name(raw_text: str, allowed_tool_names: tuple[str, ...]) -> str:
@@ -300,7 +515,7 @@ def _normalize_tool_name(raw_text: str, allowed_tool_names: tuple[str, ...]) -> 
 
 
 def _strip_planner_markup(raw_text: str) -> str:
-    text = raw_text.strip()
+    text = re.sub(r"<think>.*?</think>", "", raw_text.strip(), flags=re.DOTALL | re.IGNORECASE)
     if text.startswith("```"):
         lines = [
             line.strip()
@@ -311,6 +526,35 @@ def _strip_planner_markup(raw_text: str) -> str:
             lines = lines[1:]
         text = "\n".join(lines)
     return text.strip().strip('"').strip("'").strip("`").strip()
+
+
+def _extract_json_object_from_text(text: str) -> str | None:
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return None
 
 
 def _tool_name_from_json(text: str, allowed_tool_names: tuple[str, ...]) -> str | None:

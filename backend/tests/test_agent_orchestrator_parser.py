@@ -51,15 +51,17 @@ def _done_session(question: str, answer: str) -> ChatSession:
     )
 
 
-def test_planner_uses_effective_question_for_short_reply_tool_arguments() -> None:
+def test_planner_preserves_model_supplied_tool_arguments_for_short_reply() -> None:
     history = [
         _done_session(
             "当前窗口是做什么的",
-            "当前窗口是 workbuddy 网页界面。你可以告诉我，我帮你分析当前窗口在做什么吗？",
+            "当前窗口是 workbuddy 网页界面。你想让我继续看屏幕分析当前任务进展吗？",
         )
     ]
     orchestrator = AgentOrchestrator(
-        vision_model_client=FakePlannerVisionClient("screen.look"),
+        vision_model_client=FakePlannerVisionClient(
+            '{"action":"tools","tool_calls":[{"name":"screen.look","arguments":{"question":"分析当前任务进展"}}]}'
+        ),
         registry=AgentToolRegistry(),
         runtime=object(),
     )
@@ -67,17 +69,30 @@ def test_planner_uses_effective_question_for_short_reply_tool_arguments() -> Non
     plan = orchestrator.plan(question="看吧", chat_history=history)
 
     assert plan.tool_calls[0].name == "screen.look"
-    assert plan.tool_calls[0].arguments["question"] == "请分析当前窗口在做什么"
+    assert plan.tool_calls[0].arguments["question"] == "分析当前任务进展"
     planner_prompt = "\n".join(str(m["content"]) for m in orchestrator.vision_model_client.messages[-1])
-    assert "用户原始短回复" in planner_prompt
-    assert "本轮实际任务" in planner_prompt
+    assert "当前窗口是做什么的" in planner_prompt
+    assert "看吧" in planner_prompt
+    assert "对话承接提示" not in planner_prompt
 
 
-def test_tool_answer_final_message_uses_effective_question_after_tool_evidence() -> None:
+def test_planner_can_choose_direct_answer_without_tools() -> None:
+    orchestrator = AgentOrchestrator(
+        vision_model_client=FakePlannerVisionClient('{"action":"answer","tool_calls":[]}'),
+        registry=AgentToolRegistry(),
+        runtime=object(),
+    )
+
+    plan = orchestrator.plan(question="聊聊这个方向", chat_history=[])
+
+    assert plan.tool_calls == []
+
+
+def test_tool_answer_final_message_keeps_raw_user_input_and_history() -> None:
     history = [
         _done_session(
             "当前窗口是做什么的",
-            "当前窗口是 workbuddy 网页界面。你可以告诉我，我帮你分析当前窗口在做什么吗？",
+            "当前窗口是 workbuddy 网页界面。你想让我继续看屏幕分析当前任务进展吗？",
         )
     ]
     messages = build_tool_answer_messages(
@@ -94,6 +109,7 @@ def test_tool_answer_final_message_uses_effective_question_after_tool_evidence()
     )
 
     assert "工具执行结果" in str(messages[-2]["content"])
-    assert "请基于上面的工具证据" in str(messages[-1]["content"])
-    assert "请分析当前窗口在做什么" in str(messages[-1]["content"])
-    assert str(messages[-1]["content"]).strip() != "看吧"
+    assert "本轮用户输入：看吧" in str(messages[-1]["content"])
+    joined = "\n".join(str(message["content"]) for message in messages)
+    assert "当前任务进展" in joined
+    assert "对话承接提示" not in joined
