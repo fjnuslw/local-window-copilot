@@ -37,6 +37,7 @@ from app.services.situation_builder import build_situation
 from app.services.vision_model_client import (
     BASE_PREFIX,
     VisionModelClient,
+    build_companion_messages,
     build_context_packet,
     get_vision_model_client,
 )
@@ -378,12 +379,20 @@ class ChatAgent:
                 if on_chunk is not None:
                     on_chunk(chunk)
         except ValueError as exc:
-            message = f"工具规划失败：{exc}"
-            self._append(session, message, done=True)
-            if on_chunk is not None:
-                on_chunk(message)
-            self._trace(session, "planner_error", {"error": str(exc)})
-            return
+            self._trace(session, "agent_action_error", {"error": str(exc)})
+            direct_messages = build_companion_messages(
+                question=session.question,
+                companion_prompt=companion_prompt,
+                profile_packet=profile_packet,
+                chat_history=chat_history,
+                user_goals=self._get_user_goals(),
+                question_max_chars=settings.chat_history_question_max_chars,
+                answer_max_chars=settings.chat_history_answer_max_chars,
+            )
+            for chunk in self.vision_model_client.stream_chat(messages=direct_messages):
+                self._append(session, chunk)
+                if on_chunk is not None:
+                    on_chunk(chunk)
         session.status = "done"
         session.updated_at = datetime.now(UTC)
         self._save(session)

@@ -43,8 +43,8 @@ WINDOW_WIDTH = int(round(CANVAS_WIDTH * UI_SCALE))
 WINDOW_HEIGHT = int(round(EXPANDED_CANVAS_HEIGHT * UI_SCALE))
 MASCOT_WIDTH = 300
 MASCOT_TOP = 20
-CHAT_CANVAS_WIDTH = 660
-CHAT_CANVAS_HEIGHT = 560
+CHAT_CANVAS_WIDTH = 760
+CHAT_CANVAS_HEIGHT = 640
 CHAT_WINDOW_WIDTH = CHAT_CANVAS_WIDTH
 CHAT_WINDOW_HEIGHT = CHAT_CANVAS_HEIGHT
 CHAT_CONTEXT_TOP = 98
@@ -1410,7 +1410,6 @@ class FloatingAssistantWindow:
         estimated_tokens = int(status.get("estimated_tokens") or 0)
         ctx_size = int(status.get("ctx_size") or 0)
         model = str(status.get("model_name") or "模型状态加载中")
-        tool_count = int(status.get("registered_tool_count") or 0)
         dialogue_turns = int(status.get("dialogue_turns") or 0)
         memory_count = int(status.get("memory_count") or 0)
         recent_count = int(status.get("recent_summaries_count") or 0)
@@ -1446,9 +1445,9 @@ class FloatingAssistantWindow:
         )
         draw.text((48, y + 49), model_text, fill=(28, 66, 88, 255), font=self.panel_small_font)
 
-        stats = f"工具 {tool_count} · 历史 {dialogue_turns} · 记忆 {memory_count} · 观察 {recent_count}"
-        clipped_stats = self._single_line_text(draw, stats, self.panel_small_font, 204)
-        draw.text((410, y + 8), clipped_stats, fill=(73, 106, 126, 255), font=self.panel_small_font)
+        stats = f"历史 {dialogue_turns} · 记忆 {memory_count} · 观察 {recent_count}"
+        clipped_stats = self._single_line_text(draw, stats, self.panel_small_font, 260)
+        draw.text((CHAT_CANVAS_WIDTH - 318, y + 8), clipped_stats, fill=(73, 106, 126, 255), font=self.panel_small_font)
         return y + CHAT_CONTEXT_HEIGHT
 
     def _chat_messages(self) -> list[tuple[str, str, str]]:
@@ -1481,7 +1480,7 @@ class FloatingAssistantWindow:
 
     def _draw_chat_bubble(self, draw: ImageDraw.ImageDraw, speaker: str, text: str, y: int, *, status: str) -> int:
         is_user = speaker == "user"
-        max_width = 390 if is_user else 440
+        max_width = 500 if is_user else 590
         font = self.panel_small_font if is_user else self.panel_body_font
         # 不截断消息内容：max_lines 设为很大，让完整文本展示，由消息区滚动
         lines = self._wrap_text(draw, text, font, max_width - 28, 9999)
@@ -1512,7 +1511,7 @@ class FloatingAssistantWindow:
         status: str,
     ) -> int:
         is_user = speaker == "user"
-        max_width = 390 if is_user else 440
+        max_width = 500 if is_user else 590
         font = self.panel_small_font if is_user else self.panel_body_font
         # 不截断：与 _draw_chat_bubble 保持一致的 max_lines
         lines = self._wrap_text(draw, text, font, max_width - 28, 9999)

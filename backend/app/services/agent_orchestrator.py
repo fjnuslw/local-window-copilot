@@ -99,7 +99,12 @@ class AgentOrchestrator:
         )
         if trace is not None:
             trace("planner_raw_response", {"text": raw_text})
-        calls = self._parse_tool_name_plan(raw_text, question)
+        try:
+            calls = self._parse_tool_name_plan(raw_text, question)
+        except ValueError as exc:
+            if trace is not None:
+                trace("planner_parse_error", {"error": str(exc), "raw_text": raw_text})
+            calls = []
         if trace is not None:
             trace(
                 "planner_parsed",
@@ -293,6 +298,8 @@ def _tool_calls_from_plan_text(
     tool = _normalize_tool_name(text, allowed_tool_names)
     if tool == "none" or tool.lower() in DIRECT_ACTION_WORDS:
         return []
+    if tool not in allowed_tool_names:
+        return []
     return [{"name": tool, "arguments": _default_arguments(tool, default_question)}]
 
 
@@ -407,6 +414,16 @@ def _coerce_tool_call_list(
             default_question=default_question,
         )
         return [] if call is None else [call]
+    if isinstance(value, str):
+        text = value.strip()
+        if text.lower() in DIRECT_ACTION_WORDS:
+            return []
+        matches = _tool_names_in_text(text, allowed_tool_names)
+        if len(matches) == 1 and matches[0] != "none":
+            return [{"name": matches[0], "arguments": _default_arguments(matches[0], default_question)}]
+        if len(matches) > 1:
+            raise ValueError("tool_calls string contains multiple tool names.")
+        return []
     if not isinstance(value, list):
         raise ValueError("tool_calls must be a list.")
     calls: list[dict[str, Any]] = []

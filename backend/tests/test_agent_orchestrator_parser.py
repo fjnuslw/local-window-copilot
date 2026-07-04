@@ -88,6 +88,18 @@ def test_planner_can_choose_direct_answer_without_tools() -> None:
     assert plan.tool_calls == []
 
 
+def test_planner_treats_natural_language_no_tool_as_direct_answer() -> None:
+    orchestrator = AgentOrchestrator(
+        vision_model_client=FakePlannerVisionClient("No tool is needed. Answer directly."),
+        registry=AgentToolRegistry(),
+        runtime=object(),
+    )
+
+    plan = orchestrator.plan(question="ok", chat_history=[])
+
+    assert plan.tool_calls == []
+
+
 def test_tool_answer_final_message_keeps_raw_user_input_and_history() -> None:
     history = [
         _done_session(
