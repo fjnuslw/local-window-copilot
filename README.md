@@ -1,10 +1,10 @@
 <div align="center">
 
-# 🪟 Local Window Copilot
+# Local Window Copilot
 
-**Windows 本地陪伴式桌面伙伴**
+**Windows 本地桌面 Agent：窗口观察、上下文检索、记忆与流式回答**
 
-*默认陪伴，不默认汇报 · 默认沉默，不默认分析 · 用户邀请时，才认真看、认真想、认真回应*
+一个运行在本地 Windows 桌面上的 AI 伙伴。后台把目标窗口截图转成结构化观察，前台由 `ChatAgent` 管理会话、profile 与证据检索，通过 `memory.search(query)` 在需要时调取本地上下文，并用可追溯证据完成回答。
 
 <br>
 
@@ -15,137 +15,178 @@
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2B-0078D4?logo=windows&logoColor=white)
 ![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688?logo=fastapi&logoColor=white)
-![VLM](https://img.shields.io/badge/VLM-MiniCPM--V-7C3AED?logo=openai&logoColor=white)
+![SQLite](https://img.shields.io/badge/storage-SQLite%20%2B%20FTS5-003B57?logo=sqlite&logoColor=white)
+![VLM](https://img.shields.io/badge/VLM-MiniCPM--V-7C3AED)
+![Runtime](https://img.shields.io/badge/runtime-llama.cpp-111827)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Status](https://img.shields.io/badge/status-alpha%20--%20active%20dev-orange)
 
 <br>
 
-[产品规格](project_plan/ambient_companion_product_spec_zh.md) · [开发指南](docs/development_guide_zh.md) · [桌宠素材](assets/mascot/README.md)
+[产品规格](project_plan/ambient_companion_product_spec_zh.md) ·
+[开发指南](docs/development_guide_zh.md) ·
+[WebUI/Agent 分离 Spec](docs/refactor_webui_and_agent_separation_spec.md) ·
+[桌宠素材](assets/mascot/README.md)
 
 </div>
 
 ---
 
-## ✨ 这是什么
+## 项目核心
 
-Local Window Copilot 是一个**本地、轻量、低打扰**的陪伴式桌面伙伴。它安静地在桌面上存在，理解你的工作节奏，能被随时唤起。
+Local Window Copilot 把桌面 Agent 所需的几件事作为主线来实现：窗口观察、上下文编排、记忆检索、流式工具调用和调试可观测性。
 
-它不是又一个屏幕分析器，也不是自动控制型 Agent。它的价值在于：
-
-- 🤫 **平时安静陪伴** —— 看到状态变化但不急着打断
-- 💬 **随时进入对话** —— 你想互动时立刻回应
-- 🔍 **认真拆解分析** —— 你想分析时才调用视觉、历史和记忆
-- 🏠 **完全本地运行** —— 不要求 Redis / PostgreSQL / Docker，SQLite 足矣
-- 🚫 **不替你操作电脑** —— 可以观察、陪伴、解释、建议、记录，但不自动点击/输入/提交
-
-> 截图、VLM、摘要、记忆是后台感知器官，不是产品本体。
-
----
-
-## 🎭 桌宠状态
-
-桌宠有 5 种核心状态，对应不同的工作情境。它会根据你的工作节奏自然切换表情和姿态。
-
-<table>
-<tr>
-<td align="center" width="20%">
-<img src="assets/mascot/composed/mascot_idle.png" width="120" height="120" /><br>
-<b>😴 Idle</b><br>
-<sub>默认陪伴，轻微呼吸</sub>
-</td>
-<td align="center" width="20%">
-<img src="assets/mascot/composed/mascot_observing.png" width="120" height="120" /><br>
-<b>👀 Observing</b><br>
-<sub>注意到状态变化</sub>
-</td>
-<td align="center" width="20%">
-<img src="assets/mascot/composed/mascot_analyzing.png" width="120" height="120" /><br>
-<b>🧠 Analyzing</b><br>
-<sub>认真分析当前屏幕</sub>
-</td>
-<td align="center" width="20%">
-<img src="assets/mascot/composed/mascot_privacy.png" width="120" height="120" /><br>
-<b>🔒 Privacy</b><br>
-<sub>隐私模式，停止观察</sub>
-</td>
-<td align="center" width="20%">
-<img src="assets/mascot/composed/mascot_error.png" width="120" height="120" /><br>
-<b>⚠️ Error</b><br>
-<sub>遇到问题，需要关注</sub>
-</td>
-</tr>
-</table>
+| 模块 | 当前实现 | 面试时可讲的工程点 |
+|---|---|---|
+| 桌面 Agent | Windows 透明置顶悬浮窗 + 5 种状态 | 低打扰交互、状态机、隐私/错误态、前后台协同 |
+| 观察线 | 截图 -> MiniCPM-V 结构化观察 -> SQLite | VLM prompt 契约、截图 metadata、可审计视觉证据 |
+| 对话线 | `ChatAgent` + `memory.search(query)` | 工具调用、上下文分层、probe->stream 职责分离 |
+| 记忆模块 | RuntimeStore + `memory:items` + `chat_history_fts` | 短期记忆、跨会话检索、SQLite FTS5/BM25 排名 |
+| 调试台 | WebUI 展示 raw JSON、截图、trace、runtime logs | 可观测性、可复盘、可清理、可回归测试 |
+| 本地运行时 | FastAPI + SQLite + llama.cpp + MiniCPM-V | local-first、零外部数据库依赖、OpenAI-compatible 本地推理 |
 
 ---
 
-## 🏗️ 三层产品结构
+## 当前主线
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    桌面悬浮窗 (桌宠 UI)                       │
-│              呼吸 · 眨眼 · 悬浮 · 状态指示灯                   │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-          ┌────────────────┼────────────────┐
-          ▼                ▼                ▼
-   ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
-   │  Presence    │ │  Companion   │ │   Work Lens  │
-   │  存在层      │ │  陪伴层       │ │   工作透镜    │
-   ├──────────────┤ ├──────────────┤ ├──────────────┤
-   │ 呼吸/表情    │ │ 情绪回应     │ │ 视觉分析     │
-   │ 姿态动画     │ │ 对话陪伴     │ │ 上下文拆解   │
-   │ 不展示文字   │ │ 记忆+人格    │ │ 用户邀请才触发│
-   └──────────────┘ └──────────────┘ └──────────────┘
-          │                │                │
-          └────────────────┼────────────────┘
-                           ▼
-              ┌────────────────────────┐
-              │   FastAPI Backend      │
-              │   ┌──────────────────┐ │
-              │   │ SQLite Runtime   │ │  ← 本地存储，无需外部服务
-              │   │ Store            │ │
-              │   └──────────────────┘ │
-              │   ┌──────────────────┐ │
-              │   │ llama.cpp Server │ │  ← 本地 LLM 推理
-              │   └──────────────────┘ │
-              │   ┌──────────────────┐ │
-              │   │ MiniCPM-V VLM    │ │  ← 视觉语言模型
-              │   └──────────────────┘ │
-              └────────────────────────┘
+```text
+观察线
+  target window screenshot
+  -> MiniCPM-V structured observation
+  -> window:latest_analysis
+  -> window:summaries
+  -> screenshot PNG
+
+对话线
+  user question + stable system prompt + profile + session history
+  -> probe: model decides whether to call memory.search(query)
+  -> stream: final answer, with tools still available
+  -> evidence records with source / record_id / screenshot metadata
+  -> final answer grounded in local evidence
+
+调试线
+  WebUI shows latest/history/raw JSON,
+  screenshot thumbnails, tool traces and runtime logs.
 ```
 
-| 层级 | 职责 | 何时工作 |
-|------|------|----------|
-| **Presence Layer** 存在层 | 让桌宠像"在场"，而不是按钮 | 始终运行，低频动画 |
-| **Companion Layer** 陪伴层 | 情绪回应、对话陪伴、记忆与人格 | 用户说话时激活 |
-| **Work Lens** 工作透镜 | 调用视觉和上下文做认真分析 | 仅用户邀请时触发 |
+这条主线已经落到当前实现中；相关背景可以从 [WebUI/Agent 分离 Spec](docs/refactor_webui_and_agent_separation_spec.md) 和 [产品规格](project_plan/ambient_companion_product_spec_zh.md) 继续阅读。历史 spec 中的独立 planner、三工具设计、关键词路由和固定窗口摘要注入已经被当前实现替换。
 
 ---
 
-## 🧩 Agent 工具层
+## Agent 与上下文管理
 
-模型可见的工具只有三个，保持克制：
+### 1. 模型可见工具
 
+当前模型可见工具只有一个：
+
+```text
+memory.search(query)
 ```
-screen.look       看当前/最近屏幕，内部调用截图索引、局部裁剪和 VLM
-memory.search     查 profile、短期记忆、最近对话和屏幕索引
-memory.remember   只在用户明确要求"记住"时写入本地记忆
-```
 
-后端 provider 提供：`current_screen` / `screen_history` / `vision.inspect` / `profile.md` / `runtime memory` / `conversation history`
+它负责按需检索本地证据，返回带 `source`、`record_id`、截图 metadata 的相关上下文。OpenAI-compatible function 名称在协议层兼容为 `memory_search`，文档和 UI 统一称为 `memory.search(query)`。
+
+### 2. 上下文分层
+
+| 上下文 | 进入方式 | 作用 |
+|---|---|---|
+| stable system prompt | 直接进入 messages | 约束回答原则与工具协议 |
+| profile packet | 会话级冻结 | 保持 persona/profile 稳定，提升 llama.cpp prefix cache 命中 |
+| session history | 最近 N 轮直接进入 | 保持当前对话连续性 |
+| window observations | 通过 `memory.search` 调取 | 回答窗口、页面、代码、截图相关问题 |
+| memory items | 近期尾部 + 检索候选 | 用户偏好、任务事实、明确记录 |
+| cross-session chat history | `chat_history_fts` 检索 | 找回历史讨论、结论和偏好 |
+
+### 3. probe -> stream
+
+`ChatAgent` 采用两段式回答：
+
+1. **probe 阶段**：模型带 tools 判断是否调用 `memory.search(query)`，只读取结构化 `tool_calls`。
+2. **工具执行**：后端执行检索，生成工具结果并追加到 messages。
+3. **stream 阶段**：模型流式生成最终回答，tools 仍然可用。
+4. **流式工具循环**：stream 中如继续出现 tool call，暂停输出、执行工具、追加结果，再继续 stream，最多 2 轮。
+
+这样可以把小 VLM function calling 的不稳定性限制在工具决策层，最终回答始终由 stream 阶段产出。
 
 ---
 
-## 🚀 快速开始
+## 记忆与检索
+
+`memory.search(query)` 的候选集来自多个本地来源：
+
+| Source | 内容 |
+|---|---|
+| `window:latest_analysis` | 最近一次成功窗口观察 |
+| `window:summaries` | 滚动结构化观察历史 |
+| `memory:working:observation` | 当前工作观察卡片 |
+| `memory:items` | 用户问题、助手回答、用户 note、短期事实 |
+| `assistant:chat:history` | 当前运行期对话历史 |
+| `chat_history_fts` | 持久跨会话 FTS5 索引 |
+
+检索排序使用 SQLite FTS5 + BM25，并对中文做 bigram 双字滑窗分词。候选集通常是几十条，本地确定性 ranker 可以在毫秒级返回结果，也让观察线 VLM 与证据排序解耦。
+
+---
+
+## 技术架构
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│ Desktop Floating Window                                      │
+│  Idle / Observing / Analyzing / Privacy / Error               │
+└───────────────────────────┬──────────────────────────────────┘
+                            │ FastAPI
+                            ▼
+┌──────────────────────────────────────────────────────────────┐
+│ Backend                                                       │
+│  assistant.py  window.py  webui.py                            │
+│                                                              │
+│  ChatAgent                                                   │
+│    ├─ profile packet freeze                                  │
+│    ├─ probe -> stream(+tools)                                │
+│    ├─ memory.search(query)                                   │
+│    └─ runtime trace                                          │
+│                                                              │
+│  Observation pipeline                                         │
+│    ├─ window capture                                          │
+│    ├─ MiniCPM-V structured observation                        │
+│    └─ window summary store                                    │
+│                                                              │
+│  RuntimeStore                                                 │
+│    ├─ runtime_json                                            │
+│    ├─ runtime_events                                          │
+│    └─ chat_history_fts                                        │
+└───────────────────────────┬──────────────────────────────────┘
+                            │ OpenAI-compatible API
+                            ▼
+┌──────────────────────────────────────────────────────────────┐
+│ llama.cpp server + MiniCPM-V 4.6                              │
+└──────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 技术栈
+
+| 层 | 技术 |
+|---|---|
+| 后端 | Python 3.11+ / FastAPI / Pydantic / uvicorn |
+| 本地存储 | SQLite RuntimeStore / runtime_json / runtime_events / FTS5 |
+| 检索 | SQLite FTS5 + BM25 / 中文 bigram tokenization |
+| 模型运行时 | llama.cpp `llama-server` / OpenAI-compatible `/v1/chat/completions` |
+| 视觉模型 | MiniCPM-V 4.6 GGUF / 256K context / screenshot input |
+| 桌面 UI | Python + Win32 / 透明置顶悬浮窗 / PNG mascot states |
+| WebUI | 原生 HTML/CSS/JS / SSE 流式对话 / 调试面板 |
+| 测试 | pytest / service-level tests / API route tests |
+
+---
+
+## 快速开始
 
 ### 环境要求
 
 - Windows 10 / 11
 - Python 3.11+
-- [uv](https://docs.astral.sh/uv/) (Python 包管理)
-- [llama.cpp](https://github.com/ggml-org/llama.cpp) server (本地 LLM 推理)
-- 可选：MiniCPM-V 模型权重 (视觉分析功能)
+- [uv](https://docs.astral.sh/uv/)
+- [llama.cpp](https://github.com/ggml-org/llama.cpp) `llama-server`
+- MiniCPM-V 4.6 GGUF 权重与 mmproj 文件
 
 ### 一键启动
 
@@ -164,7 +205,7 @@ python .\scripts\check_environment.py --for-start
 
 ```powershell
 cd D:\AI_Workspace\window\backend
-uv run uvicorn app.main:app --host 127.0.0.1 --port 18080 --reload --no-access-log
+uv run uvicorn app.main:app --host 127.0.0.1 --port 18081 --reload --no-access-log
 ```
 
 ### 手动启动悬浮窗
@@ -176,170 +217,176 @@ cd D:\AI_Workspace\window
 
 ### WebUI 控制台
 
-启动后访问：**http://127.0.0.1:18080/webui/**
-
----
-
-## 🎬 演示场景
-
-> 📌 以下为产品设计的典型交互场景，演示 GIF 将在正式发布后补充。
-
-### 场景一：陪伴模式
-
-```
-用户：我觉得这个方向不对。
-桌宠：我也感觉你不是在挑某个实现细节，而是在怀疑"摘要作为中心"这件事。
-      我们可以先不急着改代码，把产品灵魂重新定一下。
-```
-
-### 场景二：工作透镜
-
-```
-用户：（点击桌宠"观察"按钮）
-桌宠：[切换到 analyzing 状态] 
-      我看到你现在在 IDE 里，打开了三个文件，光标停在 window_analysis.py。
-      这个函数最近的改动引入了一个未关闭的 session，要我帮你看看吗？
-```
-
-### 场景三：低打扰主动提示
-
-```
-[用户在同一任务上停留 45 分钟，反复切换三个窗口]
-桌宠：[轻微 observing 状态，不弹窗]
-      → 仅在悬浮窗角标显示一个小提示点，用户注意到时才展开
+```text
+http://127.0.0.1:18081/webui/
+http://127.0.0.1:18081/docs
 ```
 
 ---
 
-## 🛠️ 技术栈
+## WebUI 调试能力
 
-| 组件 | 技术 | 说明 |
-|------|------|------|
-| 后端框架 | FastAPI | 异步 API，自带 OpenAPI 文档 |
-| 本地存储 | SQLite | RuntimeStore，零配置 |
-| LLM 推理 | llama.cpp | 本地部署，保护隐私 |
-| 视觉模型 | MiniCPM-V | 视觉语言模型，屏幕理解 |
-| 桌面 UI | Python + Win32 | 悬浮窗，透明置顶 |
-| 包管理 | uv | 快速依赖管理 |
-| 测试 | pytest | 内置测试套件 |
+WebUI 用来回答工程调试时最重要的几个问题：
 
----
+- 最近一次窗口观察到底看到了什么
+- 滚动观察历史保存了哪些字段
+- 模型是否调用了 `memory.search`
+- 工具返回了哪些 `source` 与 `record_id`
+- profile、runtime config、runtime logs 是否符合预期
+- 对话、观察、记忆、日志、FTS5 索引是否能一键清理
 
-## 📡 接口一览
+关键接口：
 
 ```text
-# 助手状态与对话
+GET  /api/webui/observations/latest
+GET  /api/webui/observations
+GET  /api/webui/observations/{record_id}
+GET  /api/webui/observations/{record_id}/image
+GET  /api/webui/tool-traces
+GET  /api/webui/runtime-logs
+GET  /api/webui/profile
+PUT  /api/webui/profile
+POST /api/webui/memory/clear
+POST /api/webui/runtime-events/clear
+POST /api/webui/reset-all
+```
+
+---
+
+## API 概览
+
+```text
+# assistant
 GET  /health
 GET  /api/assistant/state
 POST /api/assistant/state
+GET  /api/assistant/events
 GET  /api/assistant/latest
 POST /api/assistant/questions
+POST /api/assistant/questions/stream
 GET  /api/assistant/conversation
 GET  /api/assistant/conversations
 POST /api/assistant/conversations/clear
-GET  /api/assistant/context-preview
+POST /api/assistant/context-preview
+GET  /api/assistant/context-status
 POST /api/assistant/resume
+POST /api/assistant/pause
+POST /api/assistant/observe
 
-# WebUI 配置
-GET  /api/webui/config
-PUT  /api/webui/config
-POST /api/webui/reload
-GET  /api/webui/window-summaries
-POST /api/webui/window-summaries/clear
-
-# 窗口捕获与监听
+# window
 POST /api/window/capture
 POST /api/window/watch/start
 POST /api/window/watch/stop
 GET  /api/window/watch/status
 ```
 
-完整 API 文档：启动后访问 `http://127.0.0.1:18080/docs`
-
 ---
 
-## 📂 代码入口
+## 代码入口
 
 ```text
-backend/app/main.py                              # FastAPI 入口
-backend/app/services/runtime_store.py             # SQLite RuntimeStore
-backend/app/services/window_capture.py            # 窗口截图
-backend/app/services/window_watcher.py            # 窗口监听
-backend/app/services/window_analysis.py           # 窗口分析
-backend/app/services/observation_builder.py       # 观察构建器
-backend/app/services/assistant_chat.py            # 对话 agent 会话入口
-backend/app/services/agent_orchestrator.py        # Hermes-like 工具规划与编排
-backend/app/services/agent_tools.py               # 三个模型可见工具 + provider
-backend/app/services/situation_builder.py         # 情境状态构建器 (spec §8.2)
-backend/app/services/interaction_policy.py        # 主动提示策略 (spec §8.3)
-backend/app/services/screenshot_crop.py           # 局部截图裁剪 (spec §9 Phase 4)
-backend/app/services/vision_model_client.py       # VLM 客户端 + 分层 messages
-backend/app/services/profile_store.py             # profile md 管理
-backend/app/services/memory.py                    # 记忆系统
-apps/desktop-floating-window/desktop_floating_window.py  # 桌宠悬浮窗
-experiments/prompts/companion_chat_v1.txt         # 陪伴模式 prompt
-experiments/prompts/visual_question_answer_v1.txt       # 视觉问答 prompt
+backend/app/main.py                         FastAPI 入口
+backend/app/core/config.py                  LWC_* 配置与本地模型路径
+
+backend/app/api/routes/assistant.py         对话、状态、观察、SSE
+backend/app/api/routes/window.py            窗口捕获与监听
+backend/app/api/routes/webui.py             WebUI 配置、观察、trace、profile
+
+backend/app/services/assistant_chat.py      ChatAgent / probe->stream / trace
+backend/app/services/agent_tools.py         memory.search / FTS5 BM25 ranker
+backend/app/services/chat_history_index.py  跨会话对话 FTS5 索引
+backend/app/services/runtime_store.py       SQLite RuntimeStore
+backend/app/services/runtime_log.py         runtime_events 日志
+backend/app/services/memory.py              working observation + memory items
+backend/app/services/profile_store.py       profile.md 管理
+
+backend/app/services/window_capture.py      Windows 目标窗口截图
+backend/app/services/window_watcher.py      后台窗口观察循环
+backend/app/services/window_analysis.py     VLM 分析服务
+backend/app/services/window_summary_store.py 结构化观察历史
+backend/app/services/observation_builder.py ObservationCard 构建
+backend/app/services/vision_model_client.py llama.cpp/OpenAI-compatible 客户端
+
+apps/desktop-floating-window/desktop_floating_window.py  桌宠悬浮窗
+experiments/prompts/analyze_window_v2.txt                观察线 VLM prompt
 ```
 
 ---
 
-## 🧪 测试
+## 数据存储
+
+默认数据库：
+
+```text
+backend/data/runtime/runtime.sqlite3
+```
+
+默认截图目录：
+
+```text
+backend/data/captures/*.png
+```
+
+主要 key / table：
+
+| 名称 | 用途 |
+|---|---|
+| `assistant:state` | 桌宠状态 |
+| `assistant:chat:current` | 当前对话 |
+| `assistant:chat:history` | 运行期对话历史 |
+| `window:latest_analysis` | 最近一次结构化窗口观察 |
+| `window:summaries` | 滚动观察历史 |
+| `memory:working:observation` | 当前工作观察卡片 |
+| `memory:items` | 短期记忆项 |
+| `runtime_events` | trace、runtime logs、memory events |
+| `chat_history_fts` | 跨会话对话检索索引 |
+
+---
+
+## 测试
 
 ```powershell
 cd D:\AI_Workspace\window\backend
 uv run pytest --basetemp D:\AI_Workspace\window\.tmp\pytest-basetemp
 ```
 
----
+测试覆盖重点：
 
-## 💾 数据存储
-
-`RuntimeStore` 是本地 SQLite 文件，默认路径：
-
-```
-backend/data/runtime/runtime.sqlite3
-```
-
-保存内容：助手状态、最近窗口分析、当前对话、历史对话、短期会话记忆、用户最近目标与困惑。**普通用户不需要安装任何额外服务。**
+- `ChatAgent` probe->stream 行为
+- `memory.search` 候选收集与 BM25 排名
+- 窗口捕获与观察服务
+- assistant state / WebUI API
+- profile、runtime config、model runtime 管理
 
 ---
 
-## 📐 产品原则
+## 路线图
 
-详见 [产品规格文档](project_plan/ambient_companion_product_spec_zh.md)：
-
-1. **默认不汇报屏幕** —— 屏幕分析结果默认进后台，只在用户主动邀请时展示
-2. **陪伴优先于分析** —— 先接住用户的情绪和判断，再根据需要进入分析
-3. **低打扰是能力** —— 高质量陪伴需要会沉默，主动发言必须满足明确条件
-4. **不伪装能力** —— 主链路不清楚就明确说不清楚
-5. **不替用户操作电脑** —— 可以观察、陪伴、解释、建议、记录，但不自动执行
-
----
-
-## 🗺️ 路线图
-
-- [x] 桌宠悬浮窗 + 5 种状态动画
-- [x] FastAPI 后端 + SQLite RuntimeStore
-- [x] 窗口捕获与分析
-- [x] MiniCPM-V 视觉语言模型接入
-- [x] 陪伴对话 + 工具编排
+- [x] 桌宠悬浮窗与 5 种状态
+- [x] FastAPI 后端与 SQLite RuntimeStore
+- [x] MiniCPM-V 窗口结构化观察
+- [x] WebUI 展示 latest/history/raw JSON/截图
+- [x] `memory.search(query)` 单工具主线
+- [x] probe->stream 职责分离与流式工具调用循环
+- [x] FTS5 BM25 证据排序与跨会话对话索引
+- [x] runtime logs / tool traces / reset-all 调试接口
+- [ ] 工具结果按 token 预算裁剪
 - [ ] 演示 GIF / 视频录制
-- [ ] Rive 动画迁移（替代 PNG 精灵图）
-- [ ] 长期记忆向量检索
-- [ ] 多显示器支持
+- [ ] 多显示器与窗口选择体验增强
+- [ ] Rive 动画迁移
 
 ---
 
-## 📄 License
+## License
 
-MIT License — 详见 [LICENSE](LICENSE)
+MIT License
 
 ---
 
 <div align="center">
 
-**Made with 🤍 by [宋林蔚](https://github.com/fjnuslw)**
+**Made by [宋林蔚](https://github.com/fjnuslw)**
 
-*如果这个项目对你有启发，欢迎 ⭐ Star*
+如果这个项目对你有启发，欢迎 Star。
 
 </div>
