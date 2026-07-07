@@ -19,7 +19,6 @@ AssistantState = Literal[
     "waiting",
     "concerned",
     "cheering",
-    "work_lens",
 ]
 
 
@@ -30,9 +29,14 @@ class AssistantStateUpdate(BaseModel):
         max_length=200,
         description="Optional short reason for observability.",
     )
+    error: str | None = Field(
+        default=None,
+        description="Optional error detail for observability.",
+    )
 
 
 class AssistantStateResponse(BaseModel):
     state: AssistantState
     updated_at: datetime
     reason: str | None = None
+    error: str | None = None

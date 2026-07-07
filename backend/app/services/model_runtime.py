@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import time
 import urllib.error
@@ -54,9 +55,18 @@ class ModelRuntimeManager:
     def ensure_server_ready(self) -> None:
         self.verify_files()
         if self.is_server_ready():
-            return
+            mismatch = self._server_mismatch_reason()
+            if not mismatch:
+                return
+            if self._process is not None and self._process.poll() is None:
+                self.stop_server()
+            else:
+                raise ModelRuntimeError(mismatch)
         self.start_server()
         self.wait_until_ready()
+        mismatch = self._server_mismatch_reason()
+        if mismatch:
+            raise ModelRuntimeError(mismatch)
 
     def verify_files(self) -> None:
         missing = [
@@ -112,6 +122,19 @@ class ModelRuntimeManager:
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
 
+    def stop_server(self) -> None:
+        if self._process is None or self._process.poll() is not None:
+            self._process = None
+            return
+        self._process.terminate()
+        try:
+            self._process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self._process.kill()
+            self._process.wait(timeout=10)
+        finally:
+            self._process = None
+
     def wait_until_ready(self) -> None:
         deadline = time.monotonic() + self.startup_timeout_seconds
         while time.monotonic() < deadline:
@@ -121,6 +144,49 @@ class ModelRuntimeManager:
                 raise ModelRuntimeError("llama-server exited before becoming ready.")
             time.sleep(0.5)
         raise ModelRuntimeError("llama-server did not become ready in time.")
+
+    def server_context_size(self) -> int | None:
+        props = self._get_json("/props")
+        if isinstance(props, dict):
+            default_settings = props.get("default_generation_settings")
+            if isinstance(default_settings, dict):
+                params = default_settings.get("params")
+                if isinstance(params, dict) and isinstance(params.get("n_ctx"), int):
+                    return params["n_ctx"]
+        models = self._get_json("/v1/models")
+        if isinstance(models, dict):
+            data = models.get("data")
+            if isinstance(data, list) and data:
+                first = data[0]
+                if isinstance(first, dict):
+                    meta = first.get("meta")
+                    if isinstance(meta, dict) and isinstance(meta.get("n_ctx"), int):
+                        return meta["n_ctx"]
+        return None
+
+    def _server_mismatch_reason(self) -> str | None:
+        actual_ctx = self.server_context_size()
+        if actual_ctx is not None and actual_ctx < self.ctx_size:
+            return (
+                "Existing llama-server has a smaller context window than configured: "
+                f"actual n_ctx={actual_ctx}, expected n_ctx>={self.ctx_size}. "
+                "Stop the stale llama-server on this port so the backend can restart it "
+                "with the configured high-context settings."
+            )
+        return None
+
+    def _get_json(self, path: str) -> dict[str, object] | None:
+        try:
+            request = urllib.request.Request(f"{self.base_url}{path}", method="GET")
+            with urllib.request.urlopen(request, timeout=1.0) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+        except (OSError, urllib.error.URLError):
+            return None
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return data if isinstance(data, dict) else None
 
 
 @lru_cache

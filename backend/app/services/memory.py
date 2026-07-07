@@ -41,7 +41,7 @@ class MemoryService:
     ) -> MemoryItem | None:
         if observation.privacy_state == "privacy":
             return None
-        key_points = "；".join(analysis.key_points[:4])
+        key_points = "；".join(analysis.key_points)
         text = analysis.summary
         if key_points:
             text = f"{text} 关键点：{key_points}"
@@ -115,6 +115,17 @@ class MemoryService:
         self._append_item(item)
         return item
 
+    def recent_items(self, *, limit: int = 5) -> list[MemoryItem]:
+        """Return the newest memory items without keyword scoring.
+
+        This intentionally does not inspect the question text. The chat path may
+        inject a small recent memory tail, but it must not route or rank by
+        substring matches.
+        """
+        if limit <= 0:
+            return []
+        return self._load_items()[-limit:]
+
     def retrieve_for_observation(
         self,
         observation: ObservationCard | None,
@@ -122,24 +133,12 @@ class MemoryService:
         question: str | None = None,
         limit: int = 5,
     ) -> list[MemoryItem]:
-        items = self._load_items()
-        if not items:
-            return []
-        if observation is None and not question:
-            return items[-limit:]
+        """Compatibility wrapper for older call sites.
 
-        query_terms = self._query_terms(observation, question)
-        scored: list[tuple[int, MemoryItem]] = []
-        for index, item in enumerate(items):
-            score = self._score_item(item, query_terms)
-            if observation is not None and item.source_observation_id == observation.observation_id:
-                score += 3
-            score += min(index, 10)
-            if score > 0:
-                scored.append((score, item))
-
-        scored.sort(key=lambda row: row[0], reverse=True)
-        return [item for _score, item in scored[:limit]]
+        Relevance scoring was removed from the main line; callers receive the
+        newest bounded tail regardless of observation or query.
+        """
+        return self.recent_items(limit=limit)
 
     def get_snapshot(
         self,
@@ -151,11 +150,7 @@ class MemoryService:
         working_observation = observation or self._load_working_observation()
         return MemorySnapshot(
             working_observation=working_observation,
-            relevant_items=self.retrieve_for_observation(
-                working_observation,
-                question=question,
-                limit=limit,
-            ),
+            relevant_items=self.recent_items(limit=limit),
         )
 
     def _append_item(self, item: MemoryItem) -> None:
@@ -182,6 +177,13 @@ class MemoryService:
             return None
         return ObservationCard.model_validate(data)
 
+    def clear_items(self) -> int:
+        """清空 memory:items，返回清理条数。"""
+        items = self._load_items()
+        count = len(items)
+        self.runtime_store.delete(MEMORY_ITEMS_KEY)
+        return count
+
     @staticmethod
     def _observation_tags(
         observation: ObservationCard,
@@ -199,35 +201,6 @@ class MemoryService:
         ]
         tags.extend(extra or [])
         return list(dict.fromkeys(tags))
-
-    @staticmethod
-    def _query_terms(observation: ObservationCard | None, question: str | None) -> set[str]:
-        values: list[str] = []
-        if observation is not None:
-            values.extend(
-                [
-                    observation.app_name or "",
-                    observation.window_title,
-                    observation.window_kind_hint,
-                    observation.privacy_state,
-                ]
-            )
-        if question:
-            values.append(question)
-        terms: set[str] = set()
-        for value in values:
-            for token in value.replace("-", " ").replace("_", " ").split():
-                token = token.strip().lower()
-                if len(token) >= 2:
-                    terms.add(token)
-        return terms
-
-    @staticmethod
-    def _score_item(item: MemoryItem, query_terms: set[str]) -> int:
-        if not query_terms:
-            return 1
-        searchable = " ".join([item.text, *item.tags]).lower()
-        return sum(1 for term in query_terms if term in searchable)
 
 
 @lru_cache

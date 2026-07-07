@@ -13,8 +13,12 @@ ENV_FILE_PATH = PROJECT_ROOT / "backend" / ".env"
 class Settings(BaseSettings):
     app_name: str = "Local Window Copilot Backend"
     app_version: str = "0.1.0"
+    backend_host: str = "127.0.0.1"
+    backend_port: int = 18081
     window_capture_dir: Path = PROJECT_ROOT / "backend" / "data" / "captures"
     chat_upload_dir: Path = PROJECT_ROOT / "backend" / "data" / "chat_uploads"
+    # 截图轮转：capture_dir 内只保留最近 N 张 PNG，超过则异步清理最旧文件。
+    window_capture_max_files: int = 200
     chat_image_max_bytes: int = 8_000_000
     auto_start_window_watch: bool = True
     window_watch_interval_seconds: float = 1.0
@@ -28,26 +32,20 @@ class Settings(BaseSettings):
         PROJECT_ROOT / "runtime" / "models" / "minicpm-v4.6" / "mmproj-model-f16.gguf"
     )
     minicpm_model_name: str = "minicpm-v4.6-f16"
-    minicpm_ctx_size: int = 8192
-    minicpm_reasoning: str = "on"
-    minicpm_reasoning_format: str = "deepseek"
-    minicpm_reasoning_budget: int = 512
+    minicpm_ctx_size: int = 256000
+    minicpm_reasoning: str = "off"
+    minicpm_reasoning_format: str = "none"
+    minicpm_reasoning_budget: int = 0
     llama_server_host: str = "127.0.0.1"
     llama_server_port: int = 18181
     llama_chat_completions_path: str = "/v1/chat/completions"
-    llama_startup_timeout_seconds: float = 45.0
-    llama_request_timeout_seconds: float = 120.0
-    model_image_long_edge: int = 1536
-    visual_answer_image_long_edge: int = 1536
+    llama_startup_timeout_seconds: float = 180.0
+    llama_request_timeout_seconds: float = 600.0
+    model_image_long_edge: int = 4096
+    model_image_max_pixels: int = 1_800_000
     runtime_store_path: Path = PROJECT_ROOT / "backend" / "data" / "runtime" / "runtime.sqlite3"
     window_analysis_prompt_path: Path = (
         PROJECT_ROOT / "experiments" / "prompts" / "analyze_window_v2.txt"
-    )
-    visual_question_answer_prompt_path: Path = (
-        PROJECT_ROOT / "experiments" / "prompts" / "visual_question_answer_v1.txt"
-    )
-    companion_chat_prompt_path: Path = (
-        PROJECT_ROOT / "experiments" / "prompts" / "companion_chat_v1.txt"
     )
     latest_analysis_ttl_seconds: int = 86400
     cors_origins: list[str] = [
@@ -56,21 +54,32 @@ class Settings(BaseSettings):
     ]
 
     # --- 模型调用参数（原硬编码于 vision_model_client.py）---
-    analyze_temperature: float = 0.1
-    analyze_max_tokens: int = 3200
+    analyze_temperature: float = 0.0
+    analyze_max_tokens: int = 8192
     answer_temperature: float = 0.2
-    answer_max_tokens: int = 1200
-    tool_planner_temperature: float = 0.0
-    tool_planner_max_tokens: int = 500
-    agent_tool_call_limit: int = 3
-    interaction_trace_payload_max_chars: int = 20000
+    answer_max_tokens: int = 32768
 
     # --- 上下文窗口（原硬编码于 assistant_chat.py / vision_model_client.py）---
     chat_history_turns: int = 4
-    chat_history_question_max_chars: int = 500
-    chat_history_answer_max_chars: int = 800
     history_retention_limit: int = 30
     chat_include_screenshot: bool = False
+    tool_result_budget_tokens: int = 8000
+    tool_result_item_budget_tokens: int = 3000
+
+    # --- Compact 上下文管理 ---
+    compact_enabled: bool = True
+    compact_auto_enabled: bool = True
+    compact_raw_tail_turns: int = 2
+    compact_batch_session_limit: int = 12
+    compact_source_budget_tokens: int = 18000
+    compact_uncovered_session_threshold: int = 6
+    compact_history_trigger_tokens: int = 24000
+    compact_model_max_input_tokens: int = 24000
+    compact_model_max_output_tokens: int = 1600
+    compact_template_budget_tokens: int = 2000
+    compact_previous_summary_budget_tokens: int = 2000
+    compact_target_summary_tokens: int = 1200
+    compact_timeout_seconds: int = 90
 
     # --- 窗口观察历史（识图观察存档，供对话 agent 检索）---
     window_summary_history_limit: int = 30
@@ -80,7 +89,6 @@ class Settings(BaseSettings):
     memory_enabled: bool = True
     memory_max_items: int = 40
     memory_retrieve_count: int = 3
-    memory_item_max_chars: int = 220
 
     # --- 性格与人设（新增，用于上下文管理）---
     personality_enabled: bool = False

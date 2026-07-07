@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -9,8 +10,23 @@ import pytest
 
 from app.schemas.analyze import WindowAnalysis, WindowAnalysisResult
 from app.schemas.window import RawWindowCapture, WindowBounds
+from app.schemas.chat import ChatSession
 from app.services import assistant_chat as chat_module
-from app.services.assistant_chat import CHAT_CURRENT_KEY, CHAT_HISTORY_KEY, ChatAgent
+from app.services.agent_tools import AgentToolResult
+from app.services.assistant_chat import (
+    CHAT_CURRENT_KEY,
+    CHAT_HISTORY_KEY,
+    AnswerContext,
+    ChatAgent,
+    ContextBudgetExceededError,
+)
+from app.services.context_summary import (
+    COMPACT_LOCK_KEY,
+    COMPACT_METRICS_KEY,
+    ROLLING_SUMMARY_KEY,
+    CompactStateStore,
+    build_rolling_summary_state,
+)
 
 
 class FakeRuntimeStore:
@@ -46,6 +62,14 @@ class FakeWatcher:
         self.started += 1
 
 
+class FakeModelRuntimeManager:
+    def __init__(self) -> None:
+        self.ensure_calls = 0
+
+    def ensure_server_ready(self) -> None:
+        self.ensure_calls += 1
+
+
 class FakeStateService:
     def __init__(self) -> None:
         self.states: list[tuple[str, str | None]] = []
@@ -61,7 +85,7 @@ class FakeAnalysisService:
         app_name: str = "Code.exe",
         window_title: str = "README.md - VS Code",
         window_type: str = "ide",
-        summary: str = "Current window is an IDE.",
+        summary: str = "当前窗口是 IDE，打开了后端项目文件。",
         screenshot_path: Path | None = None,
     ) -> None:
         self.app_name = app_name
@@ -94,618 +118,881 @@ class FakeAnalysisService:
         )
 
 
+class FakeWindowSummaryStore:
+    def __init__(self, items: list[dict[str, object]] | None = None) -> None:
+        self.items = items or []
+
+    def recent(self, *, limit: int | None = None):
+        return self.items[-limit:] if limit is not None else list(self.items)
+
+
+class FakeMemoryService:
+    def __init__(self, items=None) -> None:
+        self.items = items or []
+
+    def recent_items(self, *, limit: int = 5):
+        return self.items[-limit:]
+
+
 class FakeVisionClient:
-    def __init__(self, plan_response: str | None = None) -> None:
-        self.plan_response = plan_response or "none"
-        self.plan_calls: list[list[dict[str, object]]] = []
+    def __init__(
+        self,
+        *,
+        fail: bool = False,
+        tool_calls=None,
+        probe_content: str = "第一段，第二段。",
+        stream_tool_calls=None,  # 模拟流式阶段发起的 tool_calls
+        compact_summary_text: str | None = None,
+    ) -> None:
+        self.fail = fail
+        self.tool_calls = tool_calls
+        self.probe_content = probe_content
+        self.stream_tool_calls = stream_tool_calls
+        self.compact_summary_text = compact_summary_text
         self.calls: list[dict[str, object]] = []
-        self.visual_calls: list[dict[str, object]] = []
+        self.tool_probe_calls: list[dict[str, object]] = []
+        self.plan_calls: list[object] = []
+        self._collected_stream_tool_calls: list[dict[str, Any]] = []
+        self._stream_call_count = 0  # 用于区分第几次 stream 调用
 
-    def complete_chat(self, *, messages, temperature=None, max_tokens=None):
-        self.plan_calls.append(messages)
-        return self.plan_response
-
-    def stream_chat(self, *, messages, image_path=None, image_long_edge=None):
+    def stream_chat(self, *, messages, image_path=None, image_long_edge=None, tools=None):
         self.calls.append({
             "messages": messages,
             "image_path": image_path,
             "image_long_edge": image_long_edge,
+            "tools": tools,
         })
+        if self.fail:
+            raise RuntimeError("model failed")
+        # 如果模拟了流式工具调用，设置到 collected 属性中
+        if self.stream_tool_calls is not None:
+            self._collected_stream_tool_calls = list(self.stream_tool_calls)
+        else:
+            self._collected_stream_tool_calls = []
+        # 第 n 次 stream 调用
+        self._stream_call_count += 1
+        # 当有 stream_tool_calls 时，第一次 stream 不产生文本（模拟模型先发工具调用）
+        # 第二次及以后（工具结果已注入）产生实际回答
+        if self.stream_tool_calls and self._stream_call_count == 1:
+            return  # 第一次不 yield 文本
         yield "第一段"
         yield "，第二段。"
 
-    def stream_visual_answer(self, *, question, image_path, visual_prompt, image_long_edge=None):
-        self.visual_calls.append({
-            "question": question,
-            "image_path": image_path,
-            "visual_prompt": visual_prompt,
-            "image_long_edge": image_long_edge,
-        })
-        yield "视觉回答第一段"
-        yield "，视觉回答第二段。"
+    @property
+    def last_stream_tool_calls(self) -> list[dict[str, Any]]:
+        return self._collected_stream_tool_calls
 
+    def complete_chat_response(self, **kwargs):
+        snapshot = dict(kwargs)
+        snapshot["messages"] = [dict(message) for message in kwargs.get("messages", [])]
+        if self.fail:
+            raise RuntimeError("model failed")
+        if kwargs.get("tools"):
+            self.tool_probe_calls.append(snapshot)
+            message: dict[str, object] = {"content": self.probe_content}
+            if self.tool_calls is not None:
+                message = {"content": "", "tool_calls": self.tool_calls}
+            return {"choices": [{"message": message}]}
+        return {"choices": [{"message": {"content": ""}}]}
 
-def _plan(*calls: str) -> str:
-    return calls[0] if calls else "none"
+    def complete_chat(self, *args, **kwargs):
+        self.plan_calls.append({"args": args, "kwargs": kwargs})
+        if self.compact_summary_text is not None:
+            return self.compact_summary_text
+        raise AssertionError("compact model should not be called")
 
-
-def _screen_look(question: str) -> str:
-    return "screen.look"
-
-
-def _memory_search(query: str) -> str:
-    return "memory.search"
+def _install_services(monkeypatch):
+    watcher = FakeWatcher()
+    state = FakeStateService()
+    runtime = FakeModelRuntimeManager()
+    monkeypatch.setattr(chat_module, "get_window_watcher_service", lambda: watcher)
+    monkeypatch.setattr(chat_module, "get_assistant_state_service", lambda: state)
+    monkeypatch.setattr(chat_module, "get_model_runtime_manager", lambda: runtime)
+    return watcher, state
 
 
 @pytest.mark.anyio
-async def test_chat_question_pauses_streams_and_resume_restarts(monkeypatch) -> None:
+async def test_chat_uses_memory_search_tool_without_observation_injection(monkeypatch) -> None:
     runtime_store = FakeRuntimeStore()
-    watcher = FakeWatcher()
-    state = FakeStateService()
-    monkeypatch.setattr(chat_module, "get_window_watcher_service", lambda: watcher)
-    monkeypatch.setattr(chat_module, "get_assistant_state_service", lambda: state)
-
+    watcher, _state = _install_services(monkeypatch)
+    vision = FakeVisionClient(
+        tool_calls=[
+            {
+                "id": "call_ctx",
+                "type": "function",
+                "function": {
+                    "name": "memory_search",
+                    "arguments": "{\"query\": \"这个窗口在做什么？\"}",
+                },
+            }
+        ]
+    )
     service = ChatAgent(
         runtime_store=runtime_store,
-        analysis_service=FakeAnalysisService(),
-        vision_model_client=FakeVisionClient(),
+        analysis_service=FakeAnalysisService(summary="当前窗口是 IDE，打开了后端项目文件。"),
+        vision_model_client=vision,
+        window_summary_store=FakeWindowSummaryStore(),
     )
 
     session = await service.ask("这个窗口在做什么？")
     await asyncio.sleep(0.1)
 
     assert watcher.stopped == 1
-    assert session.question == "这个窗口在做什么？"
     current = service.current()
     assert current is not None
+    assert current.session_id == session.session_id
     assert current.answer == "第一段，第二段。"
     assert current.status == "done"
-    history = service.history(limit=5)
-    assert len(history) == 1
-    assert history[0].session_id == current.session_id
-    assert history[0].question == session.question
-    assert history[0].answer == current.answer
-
-    await service.resume_auto_watch()
-
-    assert watcher.started == 1
-    assert service.current() is None
-    assert runtime_store.deleted == ["assistant:chat:current"]
-
+    assert vision.plan_calls == []
+    assert len(vision.tool_probe_calls) == 1
+    probe_joined = "\n".join(str(m["content"]) for m in vision.tool_probe_calls[-1]["messages"])
+    assert "当前窗口是 IDE" not in probe_joined
+    assert len(vision.calls) == 1
+    final_messages = vision.calls[-1]["messages"]
+    joined = "\n".join(str(m.get("content", "")) for m in final_messages)
+    assert any(m.get("role") == "tool" and m.get("name") == "memory_search" for m in final_messages)
+    assert "当前窗口是 IDE" in joined
+    stages = [
+        payload["stage"] for name, payload in runtime_store.events
+        if name == "assistant:interaction_trace"
+    ]
+    assert "context_built" in stages
+    assert "answer_messages" in stages
+    assert "planner_raw_response" not in stages
+    assert "planner_parsed" not in stages
 
 @pytest.mark.anyio
-async def test_chat_archives_finished_current_before_new_short_reply(monkeypatch) -> None:
+async def test_chat_archives_finished_current_before_new_question(monkeypatch) -> None:
     runtime_store = FakeRuntimeStore()
     now = datetime.now(UTC)
     runtime_store.data[CHAT_CURRENT_KEY] = {
         "session_id": "previous-current",
-        "question": "帮我看看继续问什么比较好",
-        "answer": "要不要我帮你分析当前任务进展或下一步计划？",
+        "question": "上一轮",
+        "answer": "上一轮回答",
         "status": "done",
         "created_at": now.isoformat(),
         "updated_at": now.isoformat(),
     }
-    watcher = FakeWatcher()
-    state = FakeStateService()
-    vision = FakeVisionClient()
-    monkeypatch.setattr(chat_module, "get_window_watcher_service", lambda: watcher)
-    monkeypatch.setattr(chat_module, "get_assistant_state_service", lambda: state)
-
+    _install_services(monkeypatch)
     service = ChatAgent(
         runtime_store=runtime_store,
         analysis_service=FakeAnalysisService(),
-        vision_model_client=vision,
+        vision_model_client=FakeVisionClient(),
+        window_summary_store=FakeWindowSummaryStore(),
+        clear_history_on_start=False,
     )
 
-    await service.ask("可以")
+    await service.ask("继续")
     await asyncio.sleep(0.1)
 
     history = runtime_store.data[CHAT_HISTORY_KEY]
     assert isinstance(history, list)
     assert any(item["session_id"] == "previous-current" for item in history)
-    assert vision.plan_calls
-    planner_prompt = "\n".join(str(m["content"]) for m in vision.plan_calls[-1])
-    assert "帮我看看继续问什么比较好" in planner_prompt
-    assert "可以" in planner_prompt
-    assert "对话承接提示" not in planner_prompt
-    assert vision.calls
-    answer_prompt = "\n".join(str(m["content"]) for m in vision.calls[-1]["messages"])
-    assert "要不要我帮你分析当前任务进展" in answer_prompt
-    assert "可以" in answer_prompt
-    assert "对话承接提示" not in answer_prompt
+
 
 @pytest.mark.anyio
-async def test_chat_context_prefers_current_window_metadata_and_filters_pollution(monkeypatch) -> None:
+async def test_local_copilot_latest_is_not_injected(monkeypatch) -> None:
     runtime_store = FakeRuntimeStore()
-    now = datetime.now(UTC)
-    runtime_store.data[CHAT_HISTORY_KEY] = [
-        {
-            "session_id": "polluted",
-            "question": "当前窗口叫什么？",
-            "answer": "当前窗口的名字是对话工作台。",
-            "status": "done",
-            "created_at": now.isoformat(),
-            "updated_at": now.isoformat(),
-        },
-        {
-            "session_id": "clean",
-            "question": "这个页面在讲什么？",
-            "answer": "它在讲 KV cache 和 profile 分层。",
-            "status": "done",
-            "created_at": now.isoformat(),
-            "updated_at": now.isoformat(),
-        },
-    ]
-    watcher = FakeWatcher()
-    state = FakeStateService()
-    vision = FakeVisionClient(_plan(_memory_search("当前这个窗口的名字是什么？")))
-    monkeypatch.setattr(chat_module, "get_window_watcher_service", lambda: watcher)
-    monkeypatch.setattr(chat_module, "get_assistant_state_service", lambda: state)
-
+    _install_services(monkeypatch)
+    vision = FakeVisionClient()
     service = ChatAgent(
         runtime_store=runtime_store,
-        analysis_service=FakeAnalysisService(
-            app_name="chrome.exe",
-            window_title="KV Cache Profile/Agent split - Codex",
-            window_type="webpage",
-            summary="当前窗口是 Codex 文档页。",
-        ),
+        analysis_service=FakeAnalysisService(window_title="AlertWindow", summary="self UI pollution"),
         vision_model_client=vision,
+        window_summary_store=FakeWindowSummaryStore(),
     )
 
-    await service.ask("当前这个窗口的名字是什么？")
+    await service.ask("当前窗口是什么？")
     await asyncio.sleep(0.1)
 
-    assert vision.plan_calls
-    assert vision.calls
-    messages = vision.calls[-1]["messages"]
-    joined = "\n".join(str(message["content"]) for message in messages)
-    assert "KV Cache Profile/Agent split - Codex" in joined
-    assert "当前窗口索引" in joined
-    assert "对话工作台" not in joined
-    assert "它在讲 KV cache 和 profile 分层" in joined
+    joined = "\n".join(str(m["content"]) for m in vision.tool_probe_calls[-1]["messages"])
+    assert "self UI pollution" not in joined
+    assert "AlertWindow" not in joined
 
 
 @pytest.mark.anyio
-async def test_chat_rejects_latest_local_copilot_window(monkeypatch) -> None:
-    runtime_store = FakeRuntimeStore()
-    watcher = FakeWatcher()
-    state = FakeStateService()
-    vision = FakeVisionClient(_plan(_screen_look("当前这个窗口的名字是什么？")))
-    monkeypatch.setattr(chat_module, "get_window_watcher_service", lambda: watcher)
-    monkeypatch.setattr(chat_module, "get_assistant_state_service", lambda: state)
-
-    service = ChatAgent(
-        runtime_store=runtime_store,
-        analysis_service=FakeAnalysisService(window_title="AlertWindow"),
-        vision_model_client=vision,
-    )
-
-    await service.ask("当前这个窗口的名字是什么？")
-    await asyncio.sleep(0.1)
-
-    current = service.current()
-    assert current is not None
-    assert "不能当作用户窗口" in current.answer
-    assert vision.calls == []
-    assert vision.visual_calls == []
-
-
-@pytest.mark.anyio
-async def test_chat_visual_question_routes_to_visual_answer(tmp_path, monkeypatch) -> None:
-    """明确视觉类问题应越过 planner，直接用注册的 screen.look 看截图。"""
-    screenshot = tmp_path / "capture.png"
-    screenshot.write_bytes(b"fake-image")
-    runtime_store = FakeRuntimeStore()
-    watcher = FakeWatcher()
-    state = FakeStateService()
-    vision = FakeVisionClient(_plan(_screen_look("页面里有什么内容？")))
-    monkeypatch.setattr(chat_module, "get_window_watcher_service", lambda: watcher)
-    monkeypatch.setattr(chat_module, "get_assistant_state_service", lambda: state)
-
-    service = ChatAgent(
-        runtime_store=runtime_store,
-        analysis_service=FakeAnalysisService(screenshot_path=screenshot),
-        vision_model_client=vision,
-    )
-
-    await service.ask("页面里有什么内容？")
-    await asyncio.sleep(0.1)
-
-    assert vision.plan_calls, "高置信视觉问题不应依赖小模型 planner"
-    assert vision.visual_calls, "screen.look 应调用 stream_visual_answer"
-    assert vision.calls, "visual tool result should be passed to answer model"
-    call = vision.visual_calls[-1]
-    assert call["question"] == "页面里有什么内容？"
-    assert call["image_path"] == screenshot
-    assert call["image_long_edge"] == 1536
-    assert "视觉追问" in call["visual_prompt"] or "视觉" in call["visual_prompt"]
-    current = service.current()
-    assert current is not None
-    assert current.answer == "第一段，第二段。"
-    assert current.status == "done"
-    trace_events = [
-        payload for name, payload in runtime_store.events
-        if name == "assistant:interaction_trace"
-    ]
-    stages = [event["stage"] for event in trace_events]
-    assert "planner_raw_response" in stages
-    assert "planner_parsed" in stages
-    assert "answer_messages" in stages
-
-
-@pytest.mark.anyio
-async def test_chat_user_image_routes_to_screen_tool(tmp_path, monkeypatch) -> None:
+async def test_user_image_is_attached_to_direct_chat(tmp_path, monkeypatch) -> None:
     upload_dir = tmp_path / "uploads"
     settings = chat_module.get_settings()
     monkeypatch.setattr(settings, "chat_upload_dir", upload_dir)
     monkeypatch.setattr(settings, "chat_image_max_bytes", 1024)
-    runtime_store = FakeRuntimeStore()
-    watcher = FakeWatcher()
-    state = FakeStateService()
-    vision = FakeVisionClient(_plan(_screen_look("这张图里有什么")))
-    monkeypatch.setattr(chat_module, "get_window_watcher_service", lambda: watcher)
-    monkeypatch.setattr(chat_module, "get_assistant_state_service", lambda: state)
-
+    _install_services(monkeypatch)
+    vision = FakeVisionClient()
     service = ChatAgent(
-        runtime_store=runtime_store,
+        runtime_store=FakeRuntimeStore(),
         analysis_service=FakeAnalysisService(window_title="AlertWindow"),
         vision_model_client=vision,
+        window_summary_store=FakeWindowSummaryStore(),
     )
 
     encoded = base64.b64encode(b"fake-image").decode("ascii")
     await service.ask(
-        "这张图里有什么",
+        "这张图里有什么？",
         image_base64=encoded,
         image_name="clip.png",
         image_mime="image/png",
     )
     await asyncio.sleep(0.1)
 
-    current = service.current()
-    assert current is not None
-    assert current.image_name == "clip.png"
-    assert current.image_path is not None
-    assert Path(current.image_path).exists()
-    assert vision.visual_calls
-    assert vision.visual_calls[-1]["image_path"] == Path(current.image_path)
     assert vision.calls
-    assert current.answer == "第一段，第二段。"
+    image_path = vision.calls[-1]["image_path"]
+    assert isinstance(image_path, Path)
+    assert image_path.exists()
 
 
 @pytest.mark.anyio
-async def test_chat_specific_content_followup_uses_visual_tool_then_answer_model(tmp_path, monkeypatch) -> None:
-    screenshot = tmp_path / "capture.png"
-    screenshot.write_bytes(b"fake-image")
+async def test_model_error_does_not_use_alternate_answer(monkeypatch) -> None:
     runtime_store = FakeRuntimeStore()
-    watcher = FakeWatcher()
-    state = FakeStateService()
-    vision = FakeVisionClient(_plan(_screen_look("里面有什么具体内容呢")))
-    monkeypatch.setattr(chat_module, "get_window_watcher_service", lambda: watcher)
-    monkeypatch.setattr(chat_module, "get_assistant_state_service", lambda: state)
-
+    _install_services(monkeypatch)
     service = ChatAgent(
         runtime_store=runtime_store,
-        analysis_service=FakeAnalysisService(screenshot_path=screenshot),
-        vision_model_client=vision,
+        analysis_service=FakeAnalysisService(),
+        vision_model_client=FakeVisionClient(fail=True),
+        window_summary_store=FakeWindowSummaryStore(),
     )
 
-    await service.ask("里面有什么具体内容呢")
+    await service.ask("会失败吗？")
     await asyncio.sleep(0.1)
 
-    assert vision.plan_calls
-    assert vision.visual_calls
-    assert vision.calls
     current = service.current()
     assert current is not None
+    assert current.status == "error"
+    assert current.error == "model failed"
+    assert current.answer == ""
+
+
+@pytest.mark.anyio
+async def test_probe_content_without_tool_calls_is_not_answer(monkeypatch) -> None:
+    """probe 阶段模型把工具调用意图写成自然语言 content 而非结构化 tool_calls 时，
+    content 不应被当作最终答案。最终答案由 stream 阶段生成。详见 spec §2.2.1。"""
+    runtime_store = FakeRuntimeStore()
+    _install_services(monkeypatch)
+    vision = FakeVisionClient(
+        tool_calls=None,
+        probe_content="调用 memory.search 检查窗口内容。",
+    )
+    service = ChatAgent(
+        runtime_store=runtime_store,
+        analysis_service=FakeAnalysisService(),
+        vision_model_client=vision,
+        window_summary_store=FakeWindowSummaryStore(),
+    )
+
+    await service.ask("你确认一下里面都有什么吧")
+    await asyncio.sleep(0.1)
+
+    current = service.current()
+    assert current is not None
+    assert current.status == "done"
+    # probe content 不应出现在最终答案里
+    assert "调用 memory.search 检查窗口内容" not in current.answer
+    # 最终答案来自 stream 阶段
     assert current.answer == "第一段，第二段。"
+    # probe 被调用过
+    assert len(vision.tool_probe_calls) == 1
+    # stream 也被调用过（probe 无 tool_calls 时不跳过 stream）
+    assert len(vision.calls) == 1
+    # stream 应该携带 tools（修复后的行为）
+    assert vision.calls[0].get("tools") is not None
+    # trace 中应有 probe_without_tool_call 而非 no_tool_answer
     stages = [
         payload["stage"] for name, payload in runtime_store.events
         if name == "assistant:interaction_trace"
     ]
-    assert "answer_messages" in stages
+    assert "probe_without_tool_call" in stages
+    assert "no_tool_answer" not in stages
+
 
 @pytest.mark.anyio
-async def test_chat_accepts_prefixed_planner_tool_name(tmp_path, monkeypatch) -> None:
-    screenshot = tmp_path / "capture.png"
-    screenshot.write_bytes(b"fake-image")
-    runtime_store = FakeRuntimeStore()
-    watcher = FakeWatcher()
-    state = FakeStateService()
-    vision = FakeVisionClient("current_step screen.look")
-    monkeypatch.setattr(chat_module, "get_window_watcher_service", lambda: watcher)
-    monkeypatch.setattr(chat_module, "get_assistant_state_service", lambda: state)
+async def test_stream_can_call_tools_when_probe_fails(monkeypatch) -> None:
+    """probe 没发 tool_calls 但流式阶段发了 tool_calls：工具应被执行并重新 stream。
 
+    这覆盖了"对话惰性"的核心修复路径：模型在 stream 阶段获得第二次机会调 memory.search。
+    """
+    runtime_store = FakeRuntimeStore()
+    _install_services(monkeypatch)
+    stream_tc = [
+        {
+            "id": "call_stream_1",
+            "type": "function",
+            "function": {
+                "name": "memory_search",
+                "arguments": "{\"query\": \"当前窗口\"}",
+            },
+        }
+    ]
+    vision = FakeVisionClient(
+        tool_calls=None,           # probe 不发 tool_calls
+        probe_content="让我查一下。",
+        stream_tool_calls=stream_tc,  # 但 stream 发了
+    )
     service = ChatAgent(
         runtime_store=runtime_store,
-        analysis_service=FakeAnalysisService(screenshot_path=screenshot),
+        analysis_service=FakeAnalysisService(summary="IDE 窗口，打开后端项目。"),
         vision_model_client=vision,
+        window_summary_store=FakeWindowSummaryStore(),
     )
 
-    await service.ask("当前进行到哪一步了")
+    await service.ask("当前是什么窗口")
     await asyncio.sleep(0.1)
 
-    assert vision.plan_calls, "非高置信视觉问题应仍先经过 planner"
-    assert vision.visual_calls, "解析出 screen.look 后应执行视觉工具"
+    current = service.current()
+    assert current is not None
+    assert current.status == "done"
+    # probe content 不在最终答案中
+    assert "让我查一下" not in current.answer
+    # 答案来自最终 stream 轮次
+    assert current.answer == "第一段，第二段。"
+
+    # 验证调用链：
+    # 1) probe 调用一次（无 tools 结果）
+    assert len(vision.tool_probe_calls) == 1
+    # 2) stream 至少调用两次：第一次发 tool_calls，第二次带结果重新生成
+    assert len(vision.calls) >= 2
+    # 第一次 stream 有 tools 参数
+    first_stream = vision.calls[0]
+    assert first_stream.get("tools") is not None
+    # 第二次 stream 的消息中应包含工具执行结果
+    second_stream = vision.calls[1]
+    msgs_second = second_stream["messages"]
+    assert any(m.get("role") == "tool" for m in msgs_second)
+
+    # trace 中应有 stream_tool_calls 阶段
+    stages = [
+        payload["stage"] for name, payload in runtime_store.events
+        if name == "assistant:interaction_trace"
+    ]
+    assert "stream_tool_calls" in stages
+
+
+def test_inspect_context_reports_real_messages_and_memory_only_tool(monkeypatch) -> None:
+    _install_services(monkeypatch)
+    service = ChatAgent(
+        runtime_store=FakeRuntimeStore(),
+        analysis_service=FakeAnalysisService(summary="详细的观察文本内容。"),
+        vision_model_client=FakeVisionClient(),
+        window_summary_store=FakeWindowSummaryStore(),
+    )
+
+    context = service.inspect_context("预览一下")
+
+    assert context["answer_mode"] == "tool_auto"
+    assert context["usage"]["answer_mode"] == "tool_auto"
+    assert [tool["name"] for tool in context["registered_tools"]] == ["memory.search"]
+    assert context["usage"]["registered_tool_count"] == 1
+    assert context["messages"]
+    joined = "\n".join(str(message["content"]) for message in context["messages"])
+    assert "详细的观察文本内容。" not in joined
+    assert "详细的观察文本内容。" in str(context["latest_observation"])
+    assert context["usage"]["current_observation_chars"] == 0
+    assert context["usage"]["available_current_observation_chars"] > 0
+
+
+def _valid_compact_summary() -> str:
+    return "\n".join([
+        "## 当前任务",
+        "继续验证 compact 触发接入。",
+        "## 当前判断",
+        "自动触发和 summary 注入需要保持主链路稳定。",
+        "## 卡点",
+        "需要看 trace 和 RuntimeStore 写入。",
+        "## 下一步检索指针",
+        "- session_id: s1",
+        "- 关键词: compact trigger",
+        "## 用户偏好",
+        "直接、具体、少冗余。",
+        "## 最近完成",
+        "008 executor 已完成。",
+    ])
+
+
+def test_rolling_summary_is_injected_after_profile(monkeypatch) -> None:
+    runtime_store = FakeRuntimeStore()
+    CompactStateStore(runtime_store=runtime_store).save_summary(
+        build_rolling_summary_state(
+            summary=_valid_compact_summary(),
+            covered_session_ids=["s1"],
+            source_session_count=1,
+            updated_at="2026-07-06T12:00:00+00:00",
+        )
+    )
+    _install_services(monkeypatch)
+    service = ChatAgent(
+        runtime_store=runtime_store,
+        analysis_service=FakeAnalysisService(),
+        vision_model_client=FakeVisionClient(),
+        window_summary_store=FakeWindowSummaryStore(),
+        clear_history_on_start=False,
+    )
+
+    preview = service.inspect_context("继续")
+    messages = preview["messages"]
+
+    assert messages[0]["role"] == "system"
+    assert messages[1]["role"] == "user"
+    assert messages[2]["content"].startswith("[compact_state]")
+    assert "继续验证 compact 触发接入" in messages[2]["content"]
+    assert preview["compact_covered_session_ids"] == ["s1"]
+    kinds = [segment["kind"] for segment in preview["context_budget"]["segments"]]
+    labels = [segment["label"] for segment in preview["context_budget"]["segments"]]
+    assert "summary" in kinds
+    assert "rolling_summary" in labels
+
+
+@pytest.mark.anyio
+async def test_auto_compact_after_done_writes_summary_metrics_and_trace(monkeypatch) -> None:
+    runtime_store = FakeRuntimeStore()
+    settings = chat_module.get_settings()
+    monkeypatch.setattr(settings, "compact_enabled", True)
+    monkeypatch.setattr(settings, "compact_auto_enabled", True)
+    monkeypatch.setattr(settings, "compact_raw_tail_turns", 0)
+    monkeypatch.setattr(settings, "compact_uncovered_session_threshold", 1)
+    monkeypatch.setattr(settings, "compact_history_trigger_tokens", 10**9)
+    _install_services(monkeypatch)
+    vision = FakeVisionClient(compact_summary_text=_valid_compact_summary())
+    service = ChatAgent(
+        runtime_store=runtime_store,
+        analysis_service=FakeAnalysisService(),
+        vision_model_client=vision,
+        window_summary_store=FakeWindowSummaryStore(),
+    )
+
+    session = await service.ask("触发 compact")
+    await asyncio.sleep(0.1)
+
+    current = service.current()
+    assert current is not None
+    assert current.status == "done"
+    assert len(vision.plan_calls) == 1
+    assert ROLLING_SUMMARY_KEY in runtime_store.data
+    assert COMPACT_METRICS_KEY in runtime_store.data
+    summary_payload = runtime_store.data[ROLLING_SUMMARY_KEY]
+    assert summary_payload["covered_session_ids"] == [session.session_id]
+    stages = [
+        payload["stage"]
+        for name, payload in runtime_store.events
+        if name == "assistant:interaction_trace"
+    ]
+    assert "context_summary.started" in stages
+    assert "context_summary.succeeded" in stages
+
+
+@pytest.mark.anyio
+async def test_auto_compact_error_keeps_session_done_and_traces_failed(monkeypatch) -> None:
+    runtime_store = FakeRuntimeStore()
+    settings = chat_module.get_settings()
+    monkeypatch.setattr(settings, "compact_enabled", True)
+    monkeypatch.setattr(settings, "compact_auto_enabled", True)
+    monkeypatch.setattr(settings, "compact_raw_tail_turns", 0)
+    monkeypatch.setattr(settings, "compact_uncovered_session_threshold", 1)
+    monkeypatch.setattr(settings, "compact_history_trigger_tokens", 10**9)
+    _install_services(monkeypatch)
+    vision = FakeVisionClient(compact_summary_text="invalid summary")
+    service = ChatAgent(
+        runtime_store=runtime_store,
+        analysis_service=FakeAnalysisService(),
+        vision_model_client=vision,
+        window_summary_store=FakeWindowSummaryStore(),
+    )
+
+    await service.ask("触发失败 compact")
+    await asyncio.sleep(0.1)
+
+    current = service.current()
+    assert current is not None
+    assert current.status == "done"
+    assert ROLLING_SUMMARY_KEY not in runtime_store.data
+    assert runtime_store.data[COMPACT_METRICS_KEY]["last_status"] == "error"
+    stages = [
+        payload["stage"]
+        for name, payload in runtime_store.events
+        if name == "assistant:interaction_trace"
+    ]
+    assert "context_summary.failed" in stages
+
+
+def test_clear_history_clears_compact_summary_and_lock(monkeypatch) -> None:
+    runtime_store = FakeRuntimeStore()
+    now = datetime.now(UTC)
+    runtime_store.data[CHAT_HISTORY_KEY] = [{
+        "session_id": "s1",
+        "question": "q",
+        "answer": "a",
+        "status": "done",
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+    }]
+    compact_store = CompactStateStore(runtime_store=runtime_store)
+    compact_store.save_summary(
+        build_rolling_summary_state(
+            summary=_valid_compact_summary(),
+            covered_session_ids=["s1"],
+            source_session_count=1,
+        )
+    )
+    compact_store.acquire_lock(source="manual", now=now)
+    _install_services(monkeypatch)
+    service = ChatAgent(
+        runtime_store=runtime_store,
+        analysis_service=FakeAnalysisService(),
+        vision_model_client=FakeVisionClient(),
+        window_summary_store=FakeWindowSummaryStore(),
+        clear_history_on_start=False,
+    )
+
+    cleared = service.clear_history()
+
+    assert cleared == 1
+    assert CHAT_HISTORY_KEY not in runtime_store.data
+    assert ROLLING_SUMMARY_KEY not in runtime_store.data
+    assert COMPACT_LOCK_KEY not in runtime_store.data
+
+def test_compact_status_empty_store(monkeypatch) -> None:
+    runtime_store = FakeRuntimeStore()
+    _install_services(monkeypatch)
+    service = ChatAgent(
+        runtime_store=runtime_store,
+        analysis_service=FakeAnalysisService(),
+        vision_model_client=FakeVisionClient(),
+        window_summary_store=FakeWindowSummaryStore(),
+        clear_history_on_start=False,
+    )
+
+    status = service.compact_status()
+
+    assert status["enabled"] is True
+    assert status["summary"]["present"] is False
+    assert status["summary"]["tokens"] == 0
+    assert status["summary"]["covered_session_count"] == 0
+    assert status["metrics"]["last_status"] == "idle"
+    assert status["lock"]["active"] is False
+    assert status["planner"]["raw_tail_turns"] >= 0
+
+
+def test_compact_status_reports_summary_metrics_and_lock(monkeypatch) -> None:
+    runtime_store = FakeRuntimeStore()
+    compact_store = CompactStateStore(runtime_store=runtime_store)
+    covered_ids = [f"s{i}" for i in range(15)]
+    summary_state = build_rolling_summary_state(
+        summary=_valid_compact_summary(),
+        covered_session_ids=covered_ids,
+        source_session_count=len(covered_ids),
+        updated_at="2026-07-06T12:00:00+00:00",
+    )
+    compact_store.save_summary(summary_state)
+    compact_store.save_success_metrics(
+        started_at="2026-07-06T12:00:01+00:00",
+        finished_at="2026-07-06T12:00:03+00:00",
+        source_session_count=3,
+        covered_session_count=len(covered_ids),
+        summary_tokens=summary_state.estimate.tokens,
+        source_tokens=1234,
+    )
+    compact_store.acquire_lock(source="manual", now=datetime.now(UTC))
+    _install_services(monkeypatch)
+    service = ChatAgent(
+        runtime_store=runtime_store,
+        analysis_service=FakeAnalysisService(),
+        vision_model_client=FakeVisionClient(),
+        window_summary_store=FakeWindowSummaryStore(),
+        clear_history_on_start=False,
+    )
+
+    status = service.compact_status()
+
+    assert status["summary"]["present"] is True
+    assert status["summary"]["text"] == summary_state.summary
+    assert status["summary"]["tokens"] == summary_state.estimate.tokens
+    assert status["summary"]["covered_session_count"] == 15
+    assert status["summary"]["covered_session_ids_tail"] == covered_ids[-12:]
+    assert status["metrics"]["last_status"] == "ok"
+    assert status["metrics"]["source_tokens"] == 1234
+    assert status["lock"]["active"] is True
+    assert status["lock"]["source"] == "manual"
+
+class LargeToolRuntime:
+    def __init__(self, *, memory_service=None) -> None:
+        self.memory_service = memory_service
+
+    def execute_many(self, calls, context):
+        content = json.dumps(
+            {
+                "query": context.question,
+                "results": [
+                    {
+                        "source": "window:summaries",
+                        "record_id": "huge-record",
+                        "content": {"visible_text": ["A" * 20000]},
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        )
+        return [
+            AgentToolResult(
+                name=call.name,
+                ok=True,
+                content=content,
+                call_id=call.call_id,
+                model_name=call.model_name,
+            )
+            for call in calls
+        ]
+
+
+@pytest.mark.anyio
+async def test_probe_tool_result_is_budgeted_before_stream(monkeypatch) -> None:
+    runtime_store = FakeRuntimeStore()
+    _install_services(monkeypatch)
+    settings = chat_module.get_settings()
+    monkeypatch.setattr(settings, "tool_result_item_budget_tokens", 240)
+    monkeypatch.setattr(settings, "tool_result_budget_tokens", 240)
+    monkeypatch.setattr(chat_module, "AgentToolRuntime", LargeToolRuntime)
+    tool_calls = [
+        {
+            "id": "call_probe_budget",
+            "type": "function",
+            "function": {
+                "name": "memory_search",
+                "arguments": "{\"query\": \"当前窗口\"}",
+            },
+        }
+    ]
+    vision = FakeVisionClient(tool_calls=tool_calls)
+    service = ChatAgent(
+        runtime_store=runtime_store,
+        analysis_service=FakeAnalysisService(),
+        vision_model_client=vision,
+        window_summary_store=FakeWindowSummaryStore(),
+    )
+
+    await service.ask("当前窗口")
+    await asyncio.sleep(0.1)
+
     assert vision.calls
-    current = service.current()
-    assert current is not None
-    assert current.answer == "第一段，第二段。"
-    assert current.status == "done"
+    tool_message = next(
+        message for message in vision.calls[0]["messages"]
+        if message.get("role") == "tool"
+    )
+    payload = json.loads(str(tool_message["content"]))
+    assert payload["tool_result_budget"]["truncated"] is True
+    assert payload["original_json_type"] == "dict"
+    traces = [
+        payload for name, payload in runtime_store.events
+        if name == "assistant:interaction_trace" and payload.get("stage") == "tool_result_budget"
+    ]
+    assert traces
+    assert traces[-1]["payload"]["truncated_count"] == 1
+
 
 @pytest.mark.anyio
-async def test_chat_text_question_still_uses_stream_chat(monkeypatch) -> None:
-    """普通文本问题应仍走 stream_chat（KV cache 友好的分层 messages）。"""
+async def test_stream_tool_result_is_budgeted_before_second_stream(monkeypatch) -> None:
     runtime_store = FakeRuntimeStore()
-    watcher = FakeWatcher()
-    state = FakeStateService()
-    vision = FakeVisionClient()
-    monkeypatch.setattr(chat_module, "get_window_watcher_service", lambda: watcher)
-    monkeypatch.setattr(chat_module, "get_assistant_state_service", lambda: state)
-
+    _install_services(monkeypatch)
+    settings = chat_module.get_settings()
+    monkeypatch.setattr(settings, "tool_result_item_budget_tokens", 240)
+    monkeypatch.setattr(settings, "tool_result_budget_tokens", 240)
+    monkeypatch.setattr(chat_module, "AgentToolRuntime", LargeToolRuntime)
+    stream_tool_calls = [
+        {
+            "id": "call_stream_budget",
+            "type": "function",
+            "function": {
+                "name": "memory_search",
+                "arguments": "{\"query\": \"当前窗口\"}",
+            },
+        }
+    ]
+    vision = FakeVisionClient(tool_calls=None, stream_tool_calls=stream_tool_calls)
     service = ChatAgent(
         runtime_store=runtime_store,
         analysis_service=FakeAnalysisService(),
         vision_model_client=vision,
+        window_summary_store=FakeWindowSummaryStore(),
     )
 
-    await service.ask("这个项目怎么部署？")
+    await service.ask("当前窗口")
     await asyncio.sleep(0.1)
 
-    assert vision.plan_calls, "普通问题也先经过工具规划器"
-    # 无工具时走陪伴/普通 stream_chat，不调用视觉工具
-    assert vision.calls, "文本问题应调用 stream_chat"
-    assert vision.visual_calls == [], "文本问题不应调用 stream_visual_answer"
+    assert len(vision.calls) >= 2
+    tool_message = next(
+        message for message in vision.calls[1]["messages"]
+        if message.get("role") == "tool"
+    )
+    payload = json.loads(str(tool_message["content"]))
+    assert payload["tool_result_budget"]["truncated"] is True
+    assert payload["tool_result_budget"]["call_id"] == "call_stream_budget"
 
-
-@pytest.mark.anyio
-async def test_chat_visual_question_requires_available_screenshot(
-    tmp_path, monkeypatch
-) -> None:
-    """视觉问题但截图文件不存在时，明确结束，不走文本回答。"""
-    runtime_store = FakeRuntimeStore()
-    watcher = FakeWatcher()
-    state = FakeStateService()
-    vision = FakeVisionClient(_plan(_screen_look("页面里有什么？")))
-    monkeypatch.setattr(chat_module, "get_window_watcher_service", lambda: watcher)
-    monkeypatch.setattr(chat_module, "get_assistant_state_service", lambda: state)
-
-    service = ChatAgent(
-        runtime_store=runtime_store,
-        # 截图路径不存在
-        analysis_service=FakeAnalysisService(screenshot_path=tmp_path / "nonexistent.png"),
-        vision_model_client=vision,
+def _empty_answer_context(messages: list[dict[str, object]]) -> AnswerContext:
+    return AnswerContext(
+        latest=None,
+        context_latest=None,
+        history_summaries=[],
+        chat_history=[],
+        memory_items=[],
+        profile_packet="",
+        context_packet="",
+        messages=messages,
+        registered_tools=[],
+        selected_image=None,
+        selected_reason="test",
+        image_path=None,
     )
 
-    await service.ask("页面里有什么？")
-    await asyncio.sleep(0.1)
 
-    assert vision.calls == [], "缺少截图时不应调用 stream_chat"
-    assert vision.visual_calls == []
-    assert vision.plan_calls
-    current = service.current()
-    assert current is not None
-    assert "没有可用的目标窗口截图" in current.answer
-    assert current.status == "done"
+def _chat_session(question: str = "q") -> ChatSession:
+    now = datetime.now(UTC)
+    return ChatSession(
+        session_id="session-budget",
+        question=question,
+        created_at=now,
+        updated_at=now,
+    )
 
 
-@pytest.mark.anyio
-async def test_chat_companion_question_routes_to_companion_mode(monkeypatch) -> None:
-    """陪伴类问题（如"我觉得不对"）应走 companion 模式，不注入窗口观察。"""
+def test_ensure_messages_within_budget_checked_trace(monkeypatch) -> None:
     runtime_store = FakeRuntimeStore()
-    watcher = FakeWatcher()
-    state = FakeStateService()
-    vision = FakeVisionClient()
-    monkeypatch.setattr(chat_module, "get_window_watcher_service", lambda: watcher)
-    monkeypatch.setattr(chat_module, "get_assistant_state_service", lambda: state)
-
+    settings = chat_module.get_settings()
+    monkeypatch.setattr(settings, "minicpm_ctx_size", 20000)
+    monkeypatch.setattr(settings, "answer_max_tokens", 0)
     service = ChatAgent(
         runtime_store=runtime_store,
         analysis_service=FakeAnalysisService(),
-        vision_model_client=vision,
+        vision_model_client=FakeVisionClient(),
+        window_summary_store=FakeWindowSummaryStore(),
+        clear_history_on_start=False,
+    )
+    session = _chat_session()
+    context = _empty_answer_context([
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "hello"},
+    ])
+
+    payload = service._ensure_messages_within_budget(
+        session,
+        context,
+        context.messages,
+        phase="stream",
+        stream_round=0,
     )
 
-    await service.ask("我觉得这个方向不对")
-    await asyncio.sleep(0.1)
-
-    # 陪伴问题应走 stream_chat（companion 模式也用 stream_chat）
-    assert vision.calls, "陪伴问题应调用 stream_chat"
-    assert vision.visual_calls == [], "陪伴问题不应调用 stream_visual_answer"
-    messages = vision.calls[-1]["messages"]
-    joined = "\n".join(str(m["content"]) for m in messages)
-    # companion 模式不注入窗口观察
-    assert "当前窗口观察" not in joined
-    assert "当前窗口元信息" not in joined
-    # companion 模式使用 companion prompt 作为 system 消息
-    assert "桌面伙伴" in str(messages[0]["content"]) or "陪伴" in str(messages[0]["content"])
-    current = service.current()
-    assert current is not None
-    assert current.status == "done"
-
-
-@pytest.mark.anyio
-async def test_chat_companion_works_without_window_analysis(monkeypatch) -> None:
-    """陪伴模式不需要窗口分析结果，可以直接回应。"""
-    runtime_store = FakeRuntimeStore()
-    watcher = FakeWatcher()
-    state = FakeStateService()
-    vision = FakeVisionClient()
-    monkeypatch.setattr(chat_module, "get_window_watcher_service", lambda: watcher)
-    monkeypatch.setattr(chat_module, "get_assistant_state_service", lambda: state)
-
-    class NoAnalysisService:
-        def get_latest(self):
-            return None
-
-    service = ChatAgent(
-        runtime_store=runtime_store,
-        analysis_service=NoAnalysisService(),
-        vision_model_client=vision,
-    )
-
-    await service.ask("我觉得这个方向不对")
-    await asyncio.sleep(0.1)
-
-    # 陪伴模式不需要 latest_analysis
-    assert vision.calls, "陪伴模式应直接调用 stream_chat"
-    current = service.current()
-    assert current is not None
-    assert current.status == "done"
-
-
-@pytest.mark.anyio
-async def test_chat_screen_request_uses_registered_screen_tool(tmp_path, monkeypatch) -> None:
-    """看屏幕类问题应进入注册的 screen.look，而不是旧硬编码回答分叉。"""
-    runtime_store = FakeRuntimeStore()
-    watcher = FakeWatcher()
-    state = FakeStateService()
-    vision = FakeVisionClient(_plan(_screen_look("帮我分析一下当前页面")))
-    screenshot = tmp_path / "screen.png"
-    screenshot.write_bytes(b"fake-image")
-    monkeypatch.setattr(chat_module, "get_window_watcher_service", lambda: watcher)
-    monkeypatch.setattr(chat_module, "get_assistant_state_service", lambda: state)
-
-    service = ChatAgent(
-        runtime_store=runtime_store,
-        analysis_service=FakeAnalysisService(
-            app_name="chrome.exe",
-            window_title="Some Page - Chrome",
-            summary="这是一个网页。",
-            screenshot_path=screenshot,
-        ),
-        vision_model_client=vision,
-    )
-
-    await service.ask("帮我分析一下当前页面")
-    await asyncio.sleep(0.1)
-
-    assert vision.plan_calls, "高置信视觉问题不应依赖小模型 planner"
-    assert vision.visual_calls, "screen.look 应执行视觉细看"
-    assert vision.calls, "visual tool result should be passed to answer model"
-    assert vision.visual_calls[-1]["image_long_edge"] == 1536
-    current = service.current()
-    assert current is not None
-    assert current.answer == "第一段，第二段。"
-    trace_events = [
+    assert payload["over_limit"] is False
+    traces = [
         payload for name, payload in runtime_store.events
         if name == "assistant:interaction_trace"
     ]
-    stages = [event["stage"] for event in trace_events]
-    assert "planner_raw_response" in stages
-    assert "planner_parsed" in stages
-    assert "tool_results" in stages
-    assert "answer_messages" in stages
-    assert "session_finished" in stages
+    assert traces[-1]["stage"] == "context_budget.checked"
+    assert traces[-1]["payload"]["phase"] == "stream"
 
 
-@pytest.mark.anyio
-async def test_chat_records_user_goal_for_direction_reflection(monkeypatch) -> None:
-    """产品方向反思类问题应被记录到 user_goals（spec §6.2）。"""
+def test_ensure_messages_within_budget_over_limit_trace(monkeypatch) -> None:
     runtime_store = FakeRuntimeStore()
-    watcher = FakeWatcher()
-    state = FakeStateService()
-    vision = FakeVisionClient()
-    monkeypatch.setattr(chat_module, "get_window_watcher_service", lambda: watcher)
-    monkeypatch.setattr(chat_module, "get_assistant_state_service", lambda: state)
-
-    service = ChatAgent(
-        runtime_store=runtime_store,
-        analysis_service=FakeAnalysisService(),
-        vision_model_client=vision,
-    )
-
-    await service.ask("这个方向不对")
-    await asyncio.sleep(0.1)
-
-    goals = runtime_store.data.get("companion:user_goals")
-    assert isinstance(goals, list)
-    assert len(goals) == 1
-    assert goals[0]["situation_label"] == "产品方向反思"
-    assert goals[0]["user_mood_hint"] == "dissatisfied"
-
-
-@pytest.mark.anyio
-async def test_chat_does_not_record_goal_for_idle_chat(monkeypatch) -> None:
-    """无意义的闲聊不应被记录到 user_goals。"""
-    runtime_store = FakeRuntimeStore()
-    watcher = FakeWatcher()
-    state = FakeStateService()
-    vision = FakeVisionClient()
-    monkeypatch.setattr(chat_module, "get_window_watcher_service", lambda: watcher)
-    monkeypatch.setattr(chat_module, "get_assistant_state_service", lambda: state)
-
-    service = ChatAgent(
-        runtime_store=runtime_store,
-        analysis_service=FakeAnalysisService(),
-        vision_model_client=vision,
-    )
-
-    # "继续" 不命中任何情绪/意图关键词，situation 为 ambient_idle + neutral + chat
-    await service.ask("继续")
-    await asyncio.sleep(0.1)
-
-    goals = runtime_store.data.get("companion:user_goals")
-    # ambient_idle + neutral + chat 不记录
-    assert goals is None or goals == []
-
-
-def test_inspect_context_includes_situation_and_proactive_nudge(monkeypatch) -> None:
-    """inspect_context 应返回 situation 和 proactive_nudge 字段（spec §6.3 / §8.3）。"""
-    runtime_store = FakeRuntimeStore()
-    watcher = FakeWatcher()
-    state = FakeStateService()
-    monkeypatch.setattr(chat_module, "get_window_watcher_service", lambda: watcher)
-    monkeypatch.setattr(chat_module, "get_assistant_state_service", lambda: state)
-
+    settings = chat_module.get_settings()
+    monkeypatch.setattr(settings, "minicpm_ctx_size", 1)
+    monkeypatch.setattr(settings, "answer_max_tokens", 0)
     service = ChatAgent(
         runtime_store=runtime_store,
         analysis_service=FakeAnalysisService(),
         vision_model_client=FakeVisionClient(),
+        window_summary_store=FakeWindowSummaryStore(),
+        clear_history_on_start=False,
     )
+    session = _chat_session()
+    context = _empty_answer_context([
+        {"role": "system", "content": "x" * 100},
+        {"role": "user", "content": "hello"},
+    ])
 
-    context = service.inspect_context("这个方向不对")
+    with pytest.raises(ContextBudgetExceededError, match="上下文预算超限"):
+        service._ensure_messages_within_budget(
+            session,
+            context,
+            context.messages,
+            phase="probe",
+        )
 
-    # situation 字段包含 spec §8.2 定义的全部字段
-    situation = context["situation"]
-    assert "situation_label" in situation
-    assert "user_mood_hint" in situation
-    assert "likely_intent" in situation
-    assert "interrupt_policy" in situation
-    assert "companion_line" in situation
-    assert situation["situation_label"] == "产品方向反思"
-
-    # proactive_nudge 字段
-    nudge = context["proactive_nudge"]
-    assert "should_speak" in nudge
-    assert "line" in nudge
-
-    # user_goals 字段
-    assert "user_goals" in context
-    assert isinstance(context["user_goals"], list)
-
-
-def test_inspect_context_reports_registered_agent_tools(tmp_path, monkeypatch) -> None:
-    """预览不再跑硬编码四路分类，而是展示 agent 工具层。"""
-    runtime_store = FakeRuntimeStore()
-    watcher = FakeWatcher()
-    state = FakeStateService()
-    monkeypatch.setattr(chat_module, "get_window_watcher_service", lambda: watcher)
-    monkeypatch.setattr(chat_module, "get_assistant_state_service", lambda: state)
-
-    service = ChatAgent(
-        runtime_store=runtime_store,
-        analysis_service=FakeAnalysisService(screenshot_path=tmp_path / "missing.png"),
-        vision_model_client=FakeVisionClient(),
-    )
-
-    context = service.inspect_context("页面里有什么？")
-
-    assert context["answer_mode"] == "agent_orchestrated"
-    assert context["usage"]["answer_mode"] == "agent_orchestrated"
-    assert context["usage"]["registered_tool_count"] == 3
-    assert [tool["name"] for tool in context["registered_tools"]] == [
-        "screen.look",
-        "memory.search",
-        "memory.remember",
+    traces = [
+        payload for name, payload in runtime_store.events
+        if name == "assistant:interaction_trace"
     ]
-    assert context["selected_image"] is None
+    assert traces[-1]["stage"] == "context_budget.over_limit"
+    assert traces[-1]["payload"]["over_limit"] is True
+
+
+@pytest.mark.anyio
+async def test_probe_budget_over_limit_stops_before_model(monkeypatch) -> None:
+    runtime_store = FakeRuntimeStore()
+    _install_services(monkeypatch)
+    settings = chat_module.get_settings()
+    monkeypatch.setattr(settings, "minicpm_ctx_size", 1)
+    monkeypatch.setattr(settings, "answer_max_tokens", 0)
+    vision = FakeVisionClient()
+    service = ChatAgent(
+        runtime_store=runtime_store,
+        analysis_service=FakeAnalysisService(),
+        vision_model_client=vision,
+        window_summary_store=FakeWindowSummaryStore(),
+    )
+
+    await service.ask("预算会超吗")
+    await asyncio.sleep(0.1)
+
+    current = service.current()
+    assert current is not None
+    assert current.status == "error"
+    assert "上下文预算超限" in str(current.error)
+    assert vision.tool_probe_calls == []
+    assert vision.calls == []
+    stages = [
+        payload["stage"] for name, payload in runtime_store.events
+        if name == "assistant:interaction_trace"
+    ]
+    assert "context_budget.over_limit" in stages
+
+
+@pytest.mark.anyio
+async def test_tool_result_can_trigger_next_stream_budget_guard(monkeypatch) -> None:
+    runtime_store = FakeRuntimeStore()
+    _install_services(monkeypatch)
+    settings = chat_module.get_settings()
+    monkeypatch.setattr(settings, "minicpm_ctx_size", 9400)
+    monkeypatch.setattr(settings, "answer_max_tokens", 0)
+    monkeypatch.setattr(settings, "tool_result_item_budget_tokens", 3000)
+    monkeypatch.setattr(settings, "tool_result_budget_tokens", 3000)
+    monkeypatch.setattr(chat_module, "AgentToolRuntime", LargeToolRuntime)
+    stream_tool_calls = [
+        {
+            "id": "call_stream_budget_guard",
+            "type": "function",
+            "function": {
+                "name": "memory_search",
+                "arguments": "{\"query\": \"当前窗口\"}",
+            },
+        }
+    ]
+    vision = FakeVisionClient(tool_calls=None, stream_tool_calls=stream_tool_calls)
+    service = ChatAgent(
+        runtime_store=runtime_store,
+        analysis_service=FakeAnalysisService(),
+        vision_model_client=vision,
+        window_summary_store=FakeWindowSummaryStore(),
+    )
+    service._get_profile_packet = lambda: ""  # type: ignore[method-assign]
+
+    await service.ask("当前窗口")
+    await asyncio.sleep(0.1)
+
+    current = service.current()
+    assert current is not None
+    assert current.status == "error"
+    assert "上下文预算超限" in str(current.error)
+    assert len(vision.calls) == 1
+    traces = [
+        payload for name, payload in runtime_store.events
+        if name == "assistant:interaction_trace"
+    ]
+    assert any(item["stage"] == "tool_result_budget" for item in traces)
+    over = [item for item in traces if item["stage"] == "context_budget.over_limit"]
+    assert over
+    assert over[-1]["payload"]["phase"] == "stream"
+    assert over[-1]["payload"]["stream_round"] == 1

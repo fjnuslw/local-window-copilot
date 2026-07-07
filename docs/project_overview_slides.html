@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Local Window Copilot · 项目介绍</title>
+<style>
+  :root{
+    --bg:#0d1117;
+    --bg2:#161b22;
+    --panel:#1c2230;
+    --line:#2a3142;
+    --text:#e6edf3;
+    --muted:#9aa7b8;
+    --accent:#4dd0e1;
+    --accent2:#7c9eff;
+    --warn:#ffb86b;
+    --good:#7ee787;
+    --bad:#ff7b72;
+    --code:#0e1116;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;background:var(--bg);color:var(--text);
+    font-family:"PingFang SC","Microsoft YaHei","Segoe UI",-apple-system,Roboto,sans-serif;
+    overflow:hidden;-webkit-font-smoothing:antialiased}
+  #deck{position:fixed;inset:0}
+  .slide{position:absolute;inset:0;display:none;
+    padding:54px 72px;flex-direction:column;
+    animation:fade .35s ease}
+  .slide.active{display:flex}
+  @keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+  /* Header */
+  .top{display:flex;justify-content:space-between;align-items:center;
+    color:var(--muted);font-size:13px;letter-spacing:.04em;margin-bottom:28px}
+  .top .tag{color:var(--accent);font-weight:600}
+  .top .pager{font-variant-numeric:tabular-nums}
+
+  /* Titles */
+  h1{font-size:46px;line-height:1.18;font-weight:700;letter-spacing:-.01em}
+  h2{font-size:34px;font-weight:700;margin-bottom:6px;letter-spacing:-.005em}
+  h3{font-size:20px;font-weight:600;color:var(--accent);margin-bottom:10px}
+  .lead{font-size:18px;color:var(--muted);line-height:1.6;max-width:920px}
+  .accent{color:var(--accent)}
+  .accent2{color:var(--accent2)}
+  .warn{color:var(--warn)}
+  .good{color:var(--good)}
+  .bad{color:var(--bad)}
+
+  /* Cover */
+  .cover{justify-content:center;align-items:flex-start;padding:0 80px}
+  .cover .eyebrow{color:var(--accent);font-size:14px;letter-spacing:.3em;
+    text-transform:uppercase;margin-bottom:18px;font-weight:600}
+  .cover h1{font-size:64px;max-width:1000px;margin-bottom:18px}
+  .cover .sub{font-size:22px;color:var(--text);max-width:880px;line-height:1.55;margin-bottom:30px}
+  .cover .meta{display:flex;gap:28px;color:var(--muted);font-size:15px}
+  .cover .meta b{color:var(--text);font-weight:600}
+  .cover-grid{position:absolute;inset:0;pointer-events:none;
+    background-image:linear-gradient(var(--line) 1px,transparent 1px),
+                     linear-gradient(90deg,var(--line) 1px,transparent 1px);
+    background-size:60px 60px;opacity:.18;
+    -webkit-mask-image:radial-gradient(ellipse at 70% 40%,#000 30%,transparent 75%);
+            mask-image:radial-gradient(ellipse at 70% 40%,#000 30%,transparent 75%)}
+  .mascot{position:absolute;right:80px;top:50%;transform:translateY(-50%);
+    width:200px;height:200px;border-radius:50%;
+    background:radial-gradient(circle at 50% 40%,#1b2330,#0d1117);
+    box-shadow:0 0 60px rgba(77,208,225,.25),inset 0 0 30px rgba(77,208,225,.15);
+    display:flex;align-items:center;justify-content:center;
+    border:1px solid var(--line);overflow:hidden}
+  .mascot img{width:80%;height:auto;filter:drop-shadow(0 6px 18px rgba(0,0,0,.5))}
+
+  /* Content layout */
+  .body{flex:1;display:flex;flex-direction:column;gap:22px;min-height:0}
+  .row{display:flex;gap:22px}
+  .col{flex:1;display:flex;flex-direction:column;gap:14px;min-width:0}
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:22px 24px}
+  .card h3{margin-bottom:10px}
+  .card p{color:var(--muted);font-size:15px;line-height:1.65}
+  .card .num{display:inline-flex;align-items:center;justify-content:center;
+    width:30px;height:30px;border-radius:8px;background:rgba(77,208,225,.12);
+    color:var(--accent);font-weight:700;font-size:14px;margin-bottom:14px}
+
+  ul.clean{list-style:none;display:flex;flex-direction:column;gap:9px}
+  ul.clean li{position:relative;padding-left:20px;color:var(--muted);font-size:15px;line-height:1.55}
+  ul.clean li::before{content:"";position:absolute;left:2px;top:9px;width:6px;height:6px;
+    border-radius:50%;background:var(--accent)}
+  ul.clean li b{color:var(--text);font-weight:600}
+
+  /* Tables */
+  table{width:100%;border-collapse:collapse;font-size:14.5px}
+  th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line)}
+  th{color:var(--accent);font-weight:600;font-size:13px;letter-spacing:.04em;text-transform:uppercase}
+  td{color:var(--muted);line-height:1.5}
+  td b{color:var(--text);font-weight:600}
+  td:first-child{color:var(--text)}
+
+  /* Code / diagram */
+  pre{background:var(--code);border:1px solid var(--line);border-radius:12px;
+    padding:18px 22px;overflow:auto;font-family:"JetBrains Mono","Consolas",monospace;
+    font-size:13.5px;line-height:1.65;color:#c9d4e3}
+  pre .k{color:var(--accent)}
+  pre .s{color:var(--good)}
+  pre .c{color:#5d6b7e;font-style:italic}
+  pre .h{color:var(--warn)}
+
+  /* Diagram */
+  .diagram{background:var(--code);border:1px solid var(--line);border-radius:12px;
+    padding:26px 28px;font-family:"JetBrains Mono","Consolas",monospace;font-size:14px;
+    line-height:1.85;white-space:pre;color:#c9d4e3;overflow:auto}
+  .diagram .accent{color:var(--accent)}
+  .diagram .accent2{color:var(--accent2)}
+  .diagram .warn{color:var(--warn)}
+  .diagram .good{color:var(--good)}
+
+  /* Pills */
+  .pills{display:flex;flex-wrap:wrap;gap:8px}
+  .pill{background:rgba(124,158,255,.08);border:1px solid rgba(124,158,255,.3);
+    color:var(--accent2);padding:6px 14px;border-radius:999px;font-size:13px;font-weight:500}
+  .pill.alt{background:rgba(77,208,225,.08);border-color:rgba(77,208,225,.3);color:var(--accent)}
+
+  /* Two-line flow */
+  .flow{display:flex;align-items:stretch;gap:0;margin-top:6px}
+  .flow .step{flex:1;background:var(--panel);border:1px solid var(--line);
+    padding:14px 16px;font-size:13.5px;line-height:1.5;color:var(--muted)}
+  .flow .step b{display:block;color:var(--text);font-size:14.5px;margin-bottom:3px}
+  .flow .step.head{background:rgba(77,208,225,.08);border-color:rgba(77,208,225,.35)}
+  .flow .arrow{display:flex;align-items:center;justify-content:center;width:28px;
+    color:var(--accent);font-size:18px}
+
+  /* contrast box */
+  .contrast{display:flex;gap:16px}
+  .contrast .box{flex:1;border-radius:12px;padding:16px 18px;font-size:14px;line-height:1.6}
+  .contrast .yes{background:rgba(126,231,135,.06);border:1px solid rgba(126,231,135,.3)}
+  .contrast .no{background:rgba(255,123,114,.06);border:1px solid rgba(255,123,114,.3)}
+  .contrast .box .h{font-weight:700;margin-bottom:6px;font-size:13px;letter-spacing:.05em;text-transform:uppercase}
+  .contrast .yes .h{color:var(--good)}
+  .contrast .no .h{color:var(--bad)}
+  .contrast .box ul{list-style:none}
+  .contrast .box li{padding-left:18px;position:relative;margin-bottom:5px;color:var(--muted)}
+  .contrast .yes li::before{content:"✓";position:absolute;left:0;color:var(--good);font-weight:700}
+  .contrast .no li::before{content:"✕";position:absolute;left:0;color:var(--bad);font-weight:700}
+
+  /* Roadmap */
+  .roadmap{display:flex;flex-direction:column;gap:10px}
+  .rm{display:flex;align-items:center;gap:16px;padding:11px 16px;border-radius:10px;
+    background:var(--panel);border:1px solid var(--line)}
+  .rm .dot{width:14px;height:14px;border-radius:50%;flex-shrink:0}
+  .rm.done .dot{background:var(--good);box-shadow:0 0 0 4px rgba(126,231,135,.15)}
+  .rm.next .dot{background:var(--warn);box-shadow:0 0 0 4px rgba(255,184,107,.15)}
+  .rm .t{flex:1;font-size:15px;color:var(--text)}
+  .rm.done .t{color:var(--muted)}
+  .rm .st{font-size:12px;color:var(--muted);font-weight:600;letter-spacing:.05em;text-transform:uppercase}
+  .rm.done .st{color:var(--good)}
+  .rm.next .st{color:var(--warn)}
+
+  /* End */
+  .end{justify-content:center;align-items:center;text-align:center}
+  .end h1{font-size:54px;margin-bottom:14px}
+  .end .lead{max-width:680px;margin:0 auto}
+  .end .meta{margin-top:34px;color:var(--muted);font-size:14px}
+
+  /* Nav */
+  #nav{position:fixed;bottom:18px;right:24px;display:flex;gap:8px;align-items:center;
+    z-index:50}
+  #nav button{background:var(--panel);border:1px solid var(--line);color:var(--text);
+    width:34px;height:34px;border-radius:8px;cursor:pointer;font-size:14px;
+    transition:all .15s;display:flex;align-items:center;justify-content:center}
+  #nav button:hover{border-color:var(--accent);color:var(--accent)}
+  #nav .count{font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums;
+    min-width:60px;text-align:center}
+  #progress{position:fixed;left:0;bottom:0;height:3px;background:var(--accent);
+    transition:width .3s;z-index:50}
+  .hint{position:fixed;bottom:18px;left:24px;color:var(--muted);font-size:12px;z-index:50;
+    opacity:.7}
+</style>
+</head>
+<body>
+<div id="deck"></div>
+<div id="nav">
+  <button onclick="go(-1)">‹</button>
+  <span class="count" id="counter">1 / 1</span>
+  <button onclick="go(1)">›</button>
+</div>
+<div id="progress"></div>
+<div class="hint">← → 翻页 · F 全屏</div>
+
+<script>
+const slides = [
+// 1 封面
+`<section class="slide cover active">
+  <div class="cover-grid"></div>
+  <div class="mascot"><img src="../assets/mascot/composed/mascot_idle.png" alt="mascot"></div>
+  <div class="eyebrow">Local · Windows · Privacy-first</div>
+  <h1>Local Window<br><span class="accent">Copilot</span></h1>
+  <div class="sub">运行在 Windows 本地桌面的 AI 伙伴：观察前台窗口、按需检索上下文、用可追溯证据回答。</div>
+  <div class="meta">
+    <span><b>汇报人</b>　宋林蔚</span>
+    <span><b>组会</b>　2026-07-07</span>
+    <span><b>仓库</b>　github.com/fjnuslw</span>
+  </div>
+</section>`,
+
+// 2 项目定位
+`<section class="slide">
+  <div class="top"><span class="tag">01 · 项目定位</span><span class="pager">02</span></div>
+  <h2>这是什么？不是什么？</h2>
+  <p class="lead">一句话定位：一个运行在本地 Windows 桌面的 AI 伙伴，后台把目标窗口截图转成结构化观察，前台在用户提问时按需取证、用证据回答。</p>
+  <div class="body">
+    <div class="contrast">
+      <div class="box yes">
+        <div class="h">项目要做</div>
+        <ul>
+          <li>快速观察当前前台窗口</li>
+          <li>用本地 VLM 生成结构化观察与关键点</li>
+          <li>用户追问时结合观察与短期记忆回答</li>
+          <li>本地 RuntimeStore 保存状态与短期记忆</li>
+          <li>低打扰、可观测、可复盘、可清空</li>
+        </ul>
+      </div>
+      <div class="box no">
+        <div class="h">明确不做</div>
+        <ul>
+          <li>不自动点击、输入、提交、操作电脑</li>
+          <li>不做复杂规划型自主 Agent</li>
+          <li>不做 OCR / UI Automation 主链路</li>
+          <li>不做长期人格记忆</li>
+          <li>不堆叠 fallback 掩盖主链路问题</li>
+        </ul>
+      </div>
+    </div>
+    <div class="card">
+      <h3>产品中心</h3>
+      <p>陪伴式桌面伙伴；截图 + VLM 是<b style="color:var(--text)">后台感知能力</b>，不是前台产品本体。默认不汇报屏幕，默认陪伴；只有用户邀请时才进入分析。</p>
+    </div>
+  </div>
+</section>`,
+
+// 3 三条主线
+`<section class="slide">
+  <div class="top"><span class="tag">02 · 核心思想</span><span class="pager">03</span></div>
+  <h2>三条主线，职责分离</h2>
+  <p class="lead">整个项目就是三条互不污染的链路：观察线只产生证据，对话线只承接用户问题，调试线只让一切可审计。</p>
+  <div class="body">
+    <div class="row">
+      <div class="col">
+        <div class="card">
+          <span class="num">1</span>
+          <h3>观察线 · 产生证据</h3>
+          <p>目标窗口截图 → MiniCPM-V 结构化观察 → SQLite 记录 + 截图文件。只写证据，不负责对话、不主动建议、不污染长期记忆。</p>
+        </div>
+      </div>
+      <div class="col">
+        <div class="card">
+          <span class="num">2</span>
+          <h3>对话线 · 按需取证</h3>
+          <p>用户问题 + profile + 会话历史 → 模型自己决定是否调 <code>memory.search(query)</code> → 拿到证据后基于证据回答。</p>
+        </div>
+      </div>
+      <div class="col">
+        <div class="card">
+          <span class="num">3</span>
+          <h3>调试线 · 全程可审计</h3>
+          <p>WebUI 展示 latest / history / 原始 JSON / 截图缩略图 / 工具 trace / runtime logs，回答"模型查了什么、拿到哪条记录、为什么这样回答"。</p>
+        </div>
+      </div>
+    </div>
+    <div class="card" style="background:rgba(77,208,225,.05);border-color:rgba(77,208,225,.3)">
+      <h3 style="margin-bottom:6px">设计哲学</h3>
+      <p>主链路不行就<span class="warn">明确失败、暂停或提示用户</span>，不引入掩盖问题的替代链。缺截图、缺观察、工具失败都要<b style="color:var(--text)">明确暴露</b>，而不是用泛泛文本兜底。</p>
+    </div>
+  </div>
+</section>`,
+
+// 4 系统架构
+`<section class="slide">
+  <div class="top"><span class="tag">03 · 系统架构</span><span class="pager">04</span></div>
+  <h2>三层架构：桌面 → 后端 → 本地模型</h2>
+  <div class="body">
+    <div class="diagram"><span class="c">┌──────────────────────────────────────────────────────────────────┐</span>
+<span class="c">│</span>  <span class="accent2">Desktop Floating Window</span>                                          <span class="c">│</span>
+<span class="c">│</span>  Idle / Observing / Analyzing / Privacy / Error  ·  5 种状态     <span class="c">│</span>
+<span class="c">└──────────────────────────────────────────────────────────────────┘</span>
+                               <span class="accent">│</span>  FastAPI (127.0.0.1:18081)
+                               <span class="accent">▼</span>
+<span class="c">┌──────────────────────────────────────────────────────────────────┐</span>
+<span class="c">│</span>  <span class="accent2">Backend</span>   assistant.py  ·  window.py  ·  webui.py             <span class="c">│</span>
+<span class="c">│</span>                                                                  <span class="c">│</span>
+<span class="c">│</span>  <span class="accent">ChatAgent</span>      profile 冻结 → probe → stream(+tools)         <span class="c">│</span>
+<span class="c">│</span>                 └─ memory.search(query)  ·  runtime trace        <span class="c">│</span>
+<span class="c">│</span>                                                                  <span class="c">│</span>
+<span class="c">│</span>  <span class="accent">Observation pipeline</span>                                            <span class="c">│</span>
+<span class="c">│</span>                 ├─ window capture                                <span class="c">│</span>
+<span class="c">│</span>                 ├─ MiniCPM-V structured observation              <span class="c">│</span>
+<span class="c">│</span>                 └─ window summary store                          <span class="c">│</span>
+<span class="c">│</span>                                                                  <span class="c">│</span>
+<span class="c">│</span>  <span class="accent">RuntimeStore</span>   runtime_json · runtime_events · chat_history_fts <span class="c">│</span>
+<span class="c">└──────────────────────────────────────────────────────────────────┘</span>
+                               <span class="accent">│</span>  OpenAI-compatible API
+                               <span class="accent">▼</span>
+<span class="c">┌──────────────────────────────────────────────────────────────────┐</span>
+<span class="c">│</span>  <span class="warn">llama.cpp server</span>  +  <span class="warn">MiniCPM-V 4.6</span>  (256K context)         <span class="c">│</span>
+<span class="c">└──────────────────────────────────────────────────────────────────┘</span></div>
+    <div class="row">
+      <div class="card" style="flex:1.2">
+        <h3>关键设计</h3>
+        <p>所有运行时 JSON 状态走 SQLite RuntimeStore；截图存文件系统，SQLite 只存路径/hash/元数据。零外部数据库依赖，纯本地。</p>
+      </div>
+      <div class="card" style="flex:1">
+        <h3>进程边界</h3>
+        <p>桌面浮窗 ←FastAPI→ Python 后端 ←OpenAI API→ llama.cpp。三层都可独立重启，互不耦合。</p>
+      </div>
+    </div>
+  </div>
+</section>`,
+
+// 5 观察线详解
+`<section class="slide">
+  <div class="top"><span class="tag">04 · 观察线</span><span class="pager">05</span></div>
+  <h2>观察线：从截图到结构化证据</h2>
+  <p class="lead">观察线只产生证据，不做对话。输入是窗口截图 + metadata，输出是写入 SQLite 的完整结构化字段 + 截图 PNG。</p>
+  <div class="body">
+    <div class="flow">
+      <div class="step head"><b>目标窗口选择</b>排除 Copilot 自身窗 / 优先前台 / 兜底枚举</div>
+      <div class="arrow">→</div>
+      <div class="step"><b>截图捕获</b>Win32 + 标题/进程/bounds/hash/捕获时间</div>
+      <div class="arrow">→</div>
+      <div class="step"><b>VLM 分析</b>MiniCPM-V 按 prompt 契约输出结构化 JSON</div>
+      <div class="arrow">→</div>
+      <div class="step"><b>SQLite 落盘</b>latest_analysis + summaries 滚动历史</div>
+      <div class="arrow">→</div>
+      <div class="step"><b>截图文件</b>backend/data/captures/*.png</div>
+    </div>
+    <div class="row">
+      <div class="col">
+        <div class="card">
+          <h3>结构化字段（每条记录必含）</h3>
+          <ul class="clean">
+            <li><b>summary / key_points</b>　索引与检索 rank_text</li>
+            <li><b>regions / visible_text / ui_elements</b>　区域级证据</li>
+            <li><b>entities / uncertain_areas</b>　实体 + 诚实标注不确定</li>
+            <li><b>screenshot_path / hash / bounds</b>　可追溯</li>
+            <li><b>vision_input</b>　模型输入参数</li>
+          </ul>
+        </div>
+      </div>
+      <div class="col">
+        <div class="card">
+          <h3>失败分型（不掩盖问题）</h3>
+          <ul class="clean">
+            <li><b>capture_failed</b>　没拿到可捕获窗口</li>
+            <li><b>vision_failed</b>　VLM 请求失败</li>
+            <li><b>vision_length</b>　命中输出上限且无法解析</li>
+            <li><b>vision_parse_failed</b>　响应非结构化 JSON</li>
+            <li><b>store_failed</b>　SQLite 写入失败</li>
+          </ul>
+          <p style="margin-top:10px;font-size:14px">UI 与日志必须显示真实失败点，<span class="bad">不允许</span>用"当前窗口可能是…"泛化回答遮盖。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>`,
+
+// 6 对话线 probe->stream
+`<section class="slide">
+  <div class="top"><span class="tag">05 · 对话线</span><span class="pager">06</span></div>
+  <h2>对话线：probe → stream 两段式</h2>
+  <p class="lead">小 VLM 的 function calling 不稳定——有时会把"调用 memory.search"写成自然语言而非结构化 <code>tool_calls</code>。两段式把这个不稳定性限制在工具决策层，最终回答始终由 stream 产出。</p>
+  <div class="body">
+    <div class="diagram"><span class="c">1.</span> <span class="k">probe 阶段</span>  (complete_chat_response + tools)
+   模型决定是否调 <span class="s">memory.search(query)</span>
+   <span class="h">→ 只读取结构化 tool_calls，content 一律丢弃</span>
+
+<span class="c">2.</span> <span class="k">工具执行</span>    后端执行检索，生成带 record_id/source 的结果，追加到 messages
+
+<span class="c">3.</span> <span class="k">stream 阶段</span> (stream_chat + tools)
+   流式生成最终答案；<span class="good">tools 始终可用</span>，模型仍可在流中发起 tool_calls
+
+<span class="c">4.</span> <span class="k">流式工具循环</span>  stream 中检测到 tool_calls:
+   <span class="accent">暂停 yield → 执行工具 → 追加结果 → 重新 stream → 继续产出答案</span>
+   最多 <span class="warn">2 轮</span>，防止无限循环</div>
+    <div class="contrast">
+      <div class="box yes">
+        <div class="h">这样做解决了</div>
+        <ul>
+          <li>probe 失败时 stream 仍有第二次机会调工具</li>
+          <li>不会把"我要调用 memory.search"这句自然语言当答案返回</li>
+          <li>职责清晰：probe 决策，stream 产出</li>
+        </ul>
+      </div>
+      <div class="box no">
+        <div class="h">禁止回归</div>
+        <ul>
+          <li>把 probe 的 content 当最终答案直接返回</li>
+          <li>独立 planner / orchestrator 模型先规划再回答</li>
+          <li>默认把 window:latest_analysis 塞进 prompt</li>
+          <li>工具失败后静默退回普通闲聊</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>`,
+
+// 7 唯一工具 memory.search
+`<section class="slide">
+  <div class="top"><span class="tag">06 · 工具设计</span><span class="pager">07</span></div>
+  <h2>唯一工具：memory.search(query)</h2>
+  <p class="lead">模型可见工具只有一个。它是<b style="color:var(--text)">证据检索工具</b>，不是固定上下文拼包。返回内容必须与 query 相关，并标明来源。</p>
+  <div class="body">
+    <div class="row">
+      <div class="col">
+        <div class="card">
+          <h3>可检索来源（候选集）</h3>
+          <ul class="clean">
+            <li><b>window:latest_analysis</b>　最近一次成功观察</li>
+            <li><b>window:summaries</b>　滚动结构化观察历史</li>
+            <li><b>memory:working:observation</b>　当前工作观察卡片</li>
+            <li><b>memory:items</b>　短期/稳定记忆项</li>
+            <li><b>profile</b>　用户偏好与 persona</li>
+            <li><b>assistant:chat:history</b>　当前运行期对话</li>
+            <li><b>chat_history_fts</b>　跨会话 FTS5 索引</li>
+          </ul>
+        </div>
+      </div>
+      <div class="col">
+        <div class="card">
+          <h3>ranker：SQLite FTS5 + BM25</h3>
+          <ul class="clean">
+            <li>内存 SQLite 对候选证据建临时 FTS5 索引</li>
+            <li>中文 <b>bigram 双字滑窗</b>分词，ASCII 整词保留</li>
+            <li>候选集通常 30-40 条，BM25 区分度充分</li>
+            <li><b>零 LLM 调用</b>，毫秒级返回，确定性算法</li>
+          </ul>
+        </div>
+        <div class="card" style="background:rgba(255,123,114,.05);border-color:rgba(255,123,114,.3)">
+          <h3 style="color:var(--bad)">禁止的设计（已废弃）</h3>
+          <ul class="clean">
+            <li>每次固定返回 latest + recent + memory 大礼包</li>
+            <li>用 <code>if "当前" in query</code> 这类关键词判断</li>
+            <li>用 substring 命中判断情绪/意图/记忆相关性</li>
+            <li>用同一 VLM 做 reranker（连锁失败源）</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>`,
+
+// 8 上下文分层
+`<section class="slide">
+  <div class="top"><span class="tag">07 · 上下文管理</span><span class="pager">08</span></div>
+  <h2>上下文分层 + prefix cache 冻结</h2>
+  <p class="lead">不同来源的上下文进入方式不同，避免互相污染；profile 在会话级冻结以保证 llama.cpp prefix cache 命中率。</p>
+  <div class="body">
+    <table>
+      <thead><tr><th>上下文层</th><th>进入方式</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr><td><b>stable system prompt</b></td><td>直接进入 messages</td><td>约束回答原则与工具协议</td></tr>
+        <tr><td><b>profile packet</b></td><td>会话级冻结</td><td>persona/profile 稳定，<span class="accent">提升 prefix cache 命中</span></td></tr>
+        <tr><td><b>session history</b></td><td>最近 N 轮直接进入</td><td>当前对话连续性</td></tr>
+        <tr><td><b>window observations</b></td><td>通过 memory.search 调取</td><td>窗口/页面/代码/截图相关回答</td></tr>
+        <tr><td><b>memory items</b></td><td>近期尾部 + 检索候选</td><td>用户偏好、任务事实</td></tr>
+        <tr><td><b>cross-session chat</b></td><td>chat_history_fts 检索</td><td>找回历史讨论与结论</td></tr>
+      </tbody>
+    </table>
+    <div class="row">
+      <div class="card" style="flex:1">
+        <h3>会话级冻结</h3>
+        <p>ChatAgent 在首次 ask 时冻结 <code>profile_packet</code> 字符串，整个会话内复用同一对象。<b style="color:var(--text)">字节级一致</b>是 KV cache 命中的前提。</p>
+      </div>
+      <div class="card" style="flex:1">
+        <h3>上下文预算边界</h3>
+        <p>预算只在模型调用边界生效，不在存储层生效。SQLite 不做破坏性字符截断——完整字段进库，折叠发生在工具输出格式化阶段。</p>
+      </div>
+      <div class="card" style="flex:1">
+        <h3>跨会话检索</h3>
+        <p>对话结束时写入持久 <code>chat_history_fts</code>；下次会话只通过工具按需检索，<span class="bad">不全量注入</span>。</p>
+      </div>
+    </div>
+  </div>
+</section>`,
+
+// 9 关键工程决策
+`<section class="slide">
+  <div class="top"><span class="tag">08 · 工程决策</span><span class="pager">09</span></div>
+  <h2>关键工程决策：删掉了什么、为什么</h2>
+  <p class="lead">这个项目最有价值的不只是做了什么，更是<b style="color:var(--text)">明确删掉了什么</b>。每一条删除都对应一次踩坑。</p>
+  <div class="body">
+    <div class="row">
+      <div class="col">
+        <div class="card">
+          <h3>废弃：独立 planner / orchestrator</h3>
+          <p>让一个模型先规划工具、另一个模型回答，链路长且不可控。改为单 ChatAgent 内部 probe → stream。</p>
+        </div>
+        <div class="card">
+          <h3>废弃：多工具设计</h3>
+          <p><code>screen.look</code>、<code>memory.remember</code> 等多工具让小 VLM 决策更不稳定。收敛为<b style="color:var(--text)">唯一工具 memory.search</b>。</p>
+        </div>
+        <div class="card">
+          <h3>废弃：LLM reranker</h3>
+          <p>用同一 MiniCPM-V 做 memory.search 的 reranker，<span class="bad">形成连锁失败</span>：VLM JSON 不稳定 → ranker 失败 → 工具返回空。改用 BM25，毫秒级、确定性。</p>
+        </div>
+      </div>
+      <div class="col">
+        <div class="card">
+          <h3>废弃：关键词路由</h3>
+          <p><code>if "左边" in query</code> 这类固定方位裁剪、substring 情绪判断——硬编码业务理解，脆弱且不可审计。改用 FTS5 BM25 语义无关检索。</p>
+        </div>
+        <div class="card">
+          <h3>废弃：默认注入窗口观察</h3>
+          <p>曾经把 latest_analysis 默认塞进对话 prompt。改为<span class="good">默认不注入</span>，模型按需调用工具取证，避免上下文污染与 token 浪费。</p>
+        </div>
+        <div class="card">
+          <h3>废弃：增大 max_tokens 掩盖问题</h3>
+          <p>曾把 analyze_max_tokens 从 8192 提到 16384 "解决"截断。实际是 prompt 字段下限过高导致模型退化填充。<span class="warn">回归 8192，精简 prompt 契约</span>。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>`,
+
+// 10 技术栈
+`<section class="slide">
+  <div class="top"><span class="tag">09 · 技术栈</span><span class="pager">10</span></div>
+  <h2>技术栈：纯本地、零外部依赖</h2>
+  <p class="lead">所有组件运行在本机，不依赖任何云服务或外部数据库。这是 local-first 隐私设计的硬约束。</p>
+  <div class="body">
+    <table>
+      <thead><tr><th>层</th><th>技术</th><th>选型理由</th></tr></thead>
+      <tbody>
+        <tr><td><b>后端</b></td><td>Python 3.11+ / FastAPI / Pydantic / uvicorn</td><td>轻量、SSE 友好、与 ML 生态一致</td></tr>
+        <tr><td><b>本地存储</b></td><td>SQLite RuntimeStore / runtime_json / runtime_events / FTS5</td><td>零外部 DB 依赖，单文件可备份</td></tr>
+        <tr><td><b>检索</b></td><td>SQLite FTS5 + BM25 / 中文 bigram tokenization</td><td>毫秒级、确定性、无外部分词器依赖</td></tr>
+        <tr><td><b>模型运行时</b></td><td>llama.cpp <code>llama-server</code> / OpenAI-compatible API</td><td>CPU/GPU 本地推理，协议兼容 OpenAI</td></tr>
+        <tr><td><b>视觉模型</b></td><td>MiniCPM-V 4.6 GGUF / 256K context</td><td>开源小 VLM，支持截图输入</td></tr>
+        <tr><td><b>桌面 UI</b></td><td>Python + Win32 / 透明置顶悬浮窗 / PNG mascot</td><td>原生低打扰，5 种状态机</td></tr>
+        <tr><td><b>WebUI</b></td><td>原生 HTML/CSS/JS / SSE 流式对话</td><td>调试面板，可观测、可清空</td></tr>
+        <tr><td><b>测试</b></td><td>pytest / service-level + API route tests</td><td>覆盖 ChatAgent / memory / window / API</td></tr>
+      </tbody>
+    </table>
+    <div class="pills">
+      <span class="pill alt">Windows 10+</span>
+      <span class="pill">Python 3.11+</span>
+      <span class="pill alt">FastAPI 0.110+</span>
+      <span class="pill">SQLite + FTS5</span>
+      <span class="pill alt">MiniCPM-V 4.6</span>
+      <span class="pill">llama.cpp</span>
+      <span class="pill alt">Win32 API</span>
+      <span class="pill">pytest</span>
+    </div>
+  </div>
+</section>`,
+
+// 11 路线图
+`<section class="slide">
+  <div class="top"><span class="tag">10 · 进展与路线</span><span class="pager">11</span></div>
+  <h2>当前进展与下一步</h2>
+  <p class="lead">核心主线已全部落地。当前重点是把本地链路打磨稳定，而不是堆新功能。</p>
+  <div class="body">
+    <div class="roadmap">
+      <div class="rm done"><div class="dot"></div><div class="t">桌宠悬浮窗与 5 种状态（Idle / Observing / Analyzing / Privacy / Error）</div><div class="st">已完成</div></div>
+      <div class="rm done"><div class="dot"></div><div class="t">FastAPI 后端与 SQLite RuntimeStore</div><div class="st">已完成</div></div>
+      <div class="rm done"><div class="dot"></div><div class="t">MiniCPM-V 窗口结构化观察（含失败分型与 schema 收敛）</div><div class="st">已完成</div></div>
+      <div class="rm done"><div class="dot"></div><div class="t">memory.search(query) 单工具主线 + FTS5 BM25 ranker</div><div class="st">已完成</div></div>
+      <div class="rm done"><div class="dot"></div><div class="t">probe → stream 职责分离与流式工具调用循环</div><div class="st">已完成</div></div>
+      <div class="rm done"><div class="dot"></div><div class="t">跨会话对话 FTS5 索引 + runtime logs / tool traces / reset-all 调试接口</div><div class="st">已完成</div></div>
+      <div class="rm next"><div class="dot"></div><div class="t">工具结果按 token 预算裁剪</div><div class="st">下一步</div></div>
+      <div class="rm next"><div class="dot"></div><div class="t">观察质量评估（20 个真实窗口样本）+ 演示 GIF / 视频录制</div><div class="st">下一步</div></div>
+      <div class="rm next"><div class="dot"></div><div class="t">多显示器与窗口选择体验增强 · Rive 动画迁移</div><div class="st">下一步</div></div>
+    </div>
+  </div>
+</section>`,
+
+// 12 运行方式
+`<section class="slide">
+  <div class="top"><span class="tag">11 · 运行方式</span><span class="pager">12</span></div>
+  <h2>如何跑起来：一键启动 + WebUI 调试</h2>
+  <div class="body">
+    <div class="row">
+      <div class="col">
+        <div class="card">
+          <h3>一键启动</h3>
+<pre><span class="c"># Windows PowerShell</span>
+<span class="k">cd</span> D:\AI_Workspace\window
+.\scripts\start_dev.cmd
+
+<span class="c"># 启动前自检（模型/端口/依赖）</span>
+python .\scripts\check_environment.py --for-start</pre>
+          <p style="margin-top:12px">脚本会拉起 FastAPI 后端 + llama-server 模型服务 + 桌宠悬浮窗。</p>
+        </div>
+      </div>
+      <div class="col">
+        <div class="card">
+          <h3>WebUI 调试入口</h3>
+<pre><span class="c"># 调试控制台</span>
+http://127.0.0.1:18081/webui/
+http://127.0.0.1:18081/docs
+
+<span class="c"># 关键调试 API</span>
+GET  /api/webui/observations/latest
+GET  /api/webui/observations/{record_id}/image
+GET  /api/webui/tool-traces
+GET  /api/webui/runtime-logs
+POST /api/webui/reset-all</pre>
+        </div>
+      </div>
+    </div>
+    <div class="card" style="background:rgba(77,208,225,.05);border-color:rgba(77,208,225,.3)">
+      <h3>典型运行流程</h3>
+      <div class="flow" style="margin-top:8px">
+        <div class="step head"><b>1 · 启动</b>start_dev.cmd → 后端 + 模型 + 浮窗</div>
+        <div class="arrow">→</div>
+        <div class="step"><b>2 · 自动观察</b>watcher 后台截图 → VLM → SQLite</div>
+        <div class="arrow">→</div>
+        <div class="step"><b>3 · 用户提问</b>点"点击提问" → 暂停观察</div>
+        <div class="arrow">→</div>
+        <div class="step"><b>4 · 取证回答</b>probe → memory.search → stream</div>
+        <div class="arrow">→</div>
+        <div class="step"><b>5 · 调试复盘</b>WebUI 看 trace / 截图 / logs</div>
+      </div>
+    </div>
+  </div>
+</section>`,
+
+// 13 总结
+`<section class="slide end">
+  <div class="top" style="position:absolute;top:54px;left:72px;right:72px">
+    <span class="tag">12 · 总结</span><span class="pager">13</span>
+  </div>
+  <h1>三条主线，<span class="accent">一个工具</span></h1>
+  <p class="lead">观察线产生证据 · 对话线按需取证 · 调试线全程可审计。<br>模型只看到一个工具 <code style="color:var(--accent2)">memory.search(query)</code>，主链路不行就明确失败，不堆 fallback。</p>
+  <div class="meta">
+    <div>Local · Windows · Privacy-first</div>
+    <div style="margin-top:8px">Made by 宋林蔚 · github.com/fjnuslw</div>
+    <div style="margin-top:24px;font-size:13px;opacity:.6">谢谢，欢迎提问 →</div>
+  </div>
+</section>`,
+];
+
+let idx = 0;
+const deck = document.getElementById('deck');
+function render(){
+  deck.innerHTML = slides[idx];
+  const s = deck.querySelector('.slide');
+  if(s) s.classList.add('active');
+  document.getElementById('counter').textContent = (idx+1) + ' / ' + slides.length;
+  document.getElementById('progress').style.width = ((idx+1)/slides.length*100) + '%';
+}
+function go(d){
+  idx = Math.max(0, Math.min(slides.length-1, idx+d));
+  render();
+}
+document.addEventListener('keydown', e=>{
+  if(e.key==='ArrowRight'||e.key===' '||e.key==='PageDown'){go(1);e.preventDefault()}
+  else if(e.key==='ArrowLeft'||e.key==='PageUp'){go(-1);e.preventDefault()}
+  else if(e.key==='Home'){idx=0;render()}
+  else if(e.key==='End'){idx=slides.length-1;render()}
+  else if(e.key==='f'||e.key==='F'){
+    if(!document.fullscreenElement) document.documentElement.requestFullscreen();
+    else document.exitFullscreen();
+  }
+});
+render();
+</script>
+</body>
+</html>

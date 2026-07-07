@@ -5,12 +5,13 @@ from datetime import UTC, datetime
 from functools import lru_cache
 
 from app.core.config import get_settings
-from app.schemas.analyze import WindowAnalysis, WindowAnalysisResult
+from app.schemas.analyze import WindowAnalysisResult
 from app.schemas.observation import ObservationCard
 from app.schemas.window import RawWindowCapture
 from app.services.memory import MemoryService, get_memory_service
 from app.services.model_runtime import ModelRuntimeManager, get_model_runtime_manager
 from app.services.observation_builder import ObservationBuilder, get_observation_builder
+from app.services.runtime_log import get_runtime_log_service
 from app.services.runtime_store import RuntimeStore, get_runtime_store
 from app.services.vision_model_client import VisionModelClient, get_vision_model_client
 from app.services.window_summary_store import (
@@ -50,45 +51,78 @@ class ObservationAgent:
         self._load_latest()
 
     def analyze_capture(self, capture: RawWindowCapture) -> WindowAnalysisResult:
-        observation = self._build_observation(capture)
-        if observation is not None and observation.privacy_state == "privacy":
-            result = self._privacy_paused_result(capture, observation)
-            self._latest = result
-            self._write_latest(result)
-            return result
-
-        self.runtime_manager.ensure_server_ready()
-        started = time.perf_counter()
-        analysis, vision_input = self.vision_model_client.analyze_image(capture.screenshot_path)
-        latency_ms = int((time.perf_counter() - started) * 1000)
-        result = WindowAnalysisResult(
-            capture=capture,
-            observation=observation,
-            analysis=analysis,
-            latency_ms=latency_ms,
-            model_endpoint=self.vision_model_client.endpoint,
-            analyzed_at=datetime.now(UTC),
-            vision_input=vision_input,
+        log = get_runtime_log_service()
+        fields = self._capture_fields(capture)
+        log.info(
+            "window_analysis",
+            "start",
+            "Observation analysis started.",
+            **fields,
+            endpoint=self.vision_model_client.endpoint,
         )
-        self._latest = result
-        self._write_latest(result)
-        if self.window_summary_store is not None:
-            self.window_summary_store.record(
-                observation=observation,
-                window_type=analysis.window_type,
-                summary=analysis.summary,
-                key_points=analysis.key_points,
-                capture=capture,
-                vision_input=vision_input,
+        try:
+            observation = self._build_observation(capture)
+
+            self.runtime_manager.ensure_server_ready()
+            log.info(
+                "window_analysis",
+                "model_ready",
+                "Model runtime is ready.",
+                **fields,
+                endpoint=self.vision_model_client.endpoint,
             )
-        if observation is not None and self.memory_service is not None:
-            self.memory_service.save_observation(observation)
-            self.memory_service.remember_analysis(
+            started = time.perf_counter()
+            analysis, vision_input = self.vision_model_client.analyze_image(capture.screenshot_path)
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            result = WindowAnalysisResult(
+                capture=capture,
                 observation=observation,
                 analysis=analysis,
                 latency_ms=latency_ms,
+                model_endpoint=self.vision_model_client.endpoint,
+                analyzed_at=datetime.now(UTC),
+                vision_input=vision_input,
             )
-        return result
+            self._latest = result
+            self._write_latest(result)
+            log.info(
+                "window_analysis",
+                "latest_write",
+                "Latest window analysis was written.",
+                **fields,
+                latency_ms=latency_ms,
+                window_type=analysis.window_type,
+                summary=analysis.summary,
+            )
+            if self.window_summary_store is not None:
+                self.window_summary_store.record(
+                    observation=observation,
+                    window_type=analysis.window_type,
+                    summary=analysis.summary,
+                    key_points=analysis.key_points,
+                    analysis=analysis,
+                    capture=capture,
+                    vision_input=vision_input,
+                )
+                log.info(
+                    "window_analysis",
+                    "summary_write",
+                    "Window summary record was written.",
+                    **fields,
+                )
+            if observation is not None and self.memory_service is not None:
+                self.memory_service.save_observation(observation)
+            return result
+        except Exception as exc:
+            log.exception(
+                "window_analysis",
+                "failure",
+                "Observation analysis failed.",
+                exc,
+                **fields,
+                endpoint=self.vision_model_client.endpoint,
+            )
+            raise
 
     def get_latest(self) -> WindowAnalysisResult | None:
         if self._latest is None:
@@ -115,30 +149,16 @@ class ObservationAgent:
             return None
         return self.observation_builder.build_from_capture(capture)
 
-    def _privacy_paused_result(
-        self,
-        capture: RawWindowCapture,
-        observation: ObservationCard,
-    ) -> WindowAnalysisResult:
-        analysis = WindowAnalysis(
-            window_type="unknown",
-            summary="当前窗口可能包含敏感信息，已暂停自动分析。",
-            key_points=[
-                "系统检测到敏感窗口关键词。",
-                "本次没有把截图发送给模型。",
-                "如需继续，请切换到非敏感窗口或关闭隐私暂停。",
-            ],
-            candidate_questions=[],
-            caution="不要在密码、验证码、支付或私钥窗口中启用自动分析。",
-        )
-        return WindowAnalysisResult(
-            capture=capture,
-            observation=observation,
-            analysis=analysis,
-            latency_ms=0,
-            model_endpoint=self.vision_model_client.endpoint,
-            analyzed_at=datetime.now(UTC),
-        )
+    @staticmethod
+    def _capture_fields(capture: RawWindowCapture) -> dict[str, object]:
+        return {
+            "app_name": capture.app_name,
+            "window_title": capture.window_title,
+            "process_id": capture.process_id,
+            "screenshot_path": str(capture.screenshot_path),
+            "screenshot_hash": capture.screenshot_hash,
+            "captured_at": capture.captured_at.isoformat(),
+        }
 
 
 @lru_cache

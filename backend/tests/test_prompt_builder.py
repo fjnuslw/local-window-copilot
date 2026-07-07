@@ -113,6 +113,39 @@ def test_context_packet_contains_all_sections() -> None:
     assert "用户常用VSCode" in packet
 
 
+def test_context_packet_includes_structured_observation_fields() -> None:
+    packet = build_context_packet(
+        current_summary="整体：当前窗口是上下文预览页。",
+        current_key_points=["上下文预览", "memory.search"],
+        current_regions=[
+            {
+                "name": "中间上下文面板",
+                "location": "画面中央",
+                "content": "显示当前窗口观察内容和历史窗口观察内容。",
+                "visible_text": ["当前窗口观察内容", "历史窗口观察内容"],
+                "ui_elements": ["刷新按钮", "滚动条"],
+                "uncertainty": None,
+            }
+        ],
+        current_visible_text=["上下文使用率", "直接上下文"],
+        current_ui_elements=["发送按钮"],
+        current_entities=["MiniCPM-V", "Local Window Copilot"],
+        current_uncertain_areas=["右侧浮窗遮挡部分调试内容"],
+        current_vision_input={
+            "sent_size": [1800, 974],
+            "long_edge": 4096,
+            "max_pixels": 1800000,
+            "detail_mode": "detailed",
+        },
+    )
+
+    assert "区域结构" in packet
+    assert "中间上下文面板" in packet
+    assert "当前窗口观察内容" in packet
+    assert "MiniCPM-V" in packet
+    assert "sent_size=[1800, 974]" in packet
+
+
 def test_context_packet_puts_current_window_metadata_first() -> None:
     packet = build_context_packet(
         current_app_name="chrome.exe",
@@ -199,6 +232,51 @@ def test_chat_messages_filter_local_copilot_dialogue_tail() -> None:
     assert "它在讲 KV cache 与 profile 分层" in joined
 
 
+def test_context_messages_keep_full_item_text_without_char_truncation() -> None:
+    now = datetime.now(UTC)
+    current = "当前观察" + ("A" * 700) + "END_CURRENT"
+    history_observation = "历史观察" + ("B" * 700) + "END_HISTORY_OBSERVATION"
+    memory = "记忆" + ("C" * 700) + "END_MEMORY"
+    history_question = "历史问题" + ("D" * 700) + "END_HISTORY_QUESTION"
+    history_answer = "历史回答" + ("E" * 900) + "END_HISTORY_ANSWER"
+    key_points = [f"关键点{i}" for i in range(8)]
+
+    messages = build_chat_messages(
+        question="当前问题",
+        profile_packet="p",
+        current_summary=current,
+        current_key_points=key_points,
+        history_window_summaries=[
+            {
+                "created_at": "2026-07-03T10:00:00Z",
+                "app_name": "Chrome",
+                "window_title": "长观察",
+                "window_type": "webpage",
+                "summary": history_observation,
+            },
+        ],
+        memory_items=[MemoryItem(scope="working", kind="observation", text=memory)],
+        chat_history=[
+            ChatSession(
+                session_id="long-history",
+                question=history_question,
+                answer=history_answer,
+                status="done",
+                created_at=now,
+                updated_at=now,
+            )
+        ],
+    )
+    joined = "\n".join(str(message["content"]) for message in messages)
+
+    assert "END_CURRENT" in joined
+    assert "END_HISTORY_OBSERVATION" in joined
+    assert "END_MEMORY" in joined
+    assert "END_HISTORY_QUESTION" in joined
+    assert "END_HISTORY_ANSWER" in joined
+    assert "关键点7" in joined
+
+
 def test_profile_packet_does_not_duplicate_default_headings() -> None:
     store = ProfileStore(profile_root=Path("__missing_profiles__"))
 
@@ -215,10 +293,17 @@ def test_profile_defaults_include_tool_and_memory_contracts(tmp_path: Path) -> N
     packet = store.profile_packet()
 
     assert "## 工具边界" in data["assistant_md"]
-    assert "screen.look" in packet
+    assert "观察分析线" in packet
+    assert "screen.look" not in packet
     assert "memory.search" in packet
+    assert "memory.remember" not in packet
+    assert "## 角色定位" in data["assistant_md"]
+    assert "## 行动表达" in data["assistant_md"]
+    assert "不是客服" not in packet
+    assert "不是自动操作" not in packet
     assert "## 记忆原则" in data["assistant_md"]
-    assert "不引入 Redis、PostgreSQL、Docker" in data["user_md"]
+    assert "默认依赖保持轻量" in data["user_md"]
+    assert "AstrBot" in data["user_md"]
 
 
 def test_profile_load_upgrades_legacy_defaults(tmp_path: Path) -> None:

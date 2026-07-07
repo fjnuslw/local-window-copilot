@@ -1,5 +1,7 @@
 # Context / Vision / UI 下一阶段 Spec
 
+> 维护状态：历史 spec。本文中按关键词选择 visual/text、规则回看图片、固定方位裁剪等设计已废弃；当前唯一权威主线见 ../docs/context_observation_tool_mainline_spec_zh.md。
+
 更新时间：2026-07-04
 
 状态：TraeIDE 已实施，Codex 已审核并补强关键边界。

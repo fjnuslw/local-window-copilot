@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from dotenv import set_key
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from app.core.config import ENV_FILE_PATH, get_settings, reload_settings
+from app.core.config import ENV_FILE_PATH, PROJECT_ROOT, get_settings, reload_settings
 from app.services.assistant_chat import get_assistant_chat_service
 from app.services.memory import get_memory_service
 from app.services.model_runtime import get_model_runtime_manager
 from app.services.profile_store import get_profile_store
+from app.services.runtime_log import LOG_EVENT_NAME, get_runtime_log_service
 from app.services.runtime_store import get_runtime_store
 from app.services.vision_model_client import get_vision_model_client
 from app.services.window_analysis import get_window_analysis_service
@@ -26,12 +29,6 @@ router = APIRouter(prefix="/api/webui", tags=["webui"])
 # type: "segmented" 为分段控件，options 形如 [{label,value}]，写入时取对应 value。
 FIELD_META: list[dict[str, Any]] = [
     # --- 识别（基础页签）---
-    {"key": "model_image_long_edge", "group": "vision", "label": "视觉清晰度", "type": "segmented", "advanced": False,
-     "options": [{"label": "快速", "value": 768}, {"label": "标准", "value": 1024}, {"label": "细致", "value": 1344}],
-     "description": "送入模型的截图长边像素。快速省显存，细致可识别更多文字细节。实际写入 LWC_MODEL_IMAGE_LONG_EDGE。"},
-    {"key": "analyze_max_tokens", "group": "vision", "label": "分析详细度", "type": "segmented", "advanced": False,
-     "options": [{"label": "简洁", "value": 900}, {"label": "标准", "value": 1400}, {"label": "详细", "value": 1800}],
-     "description": "窗口观察生成的最大 token 数。详细模式观察更长。实际写入 LWC_ANALYZE_MAX_TOKENS。"},
     {"key": "auto_start_window_watch", "group": "vision", "label": "自动观察", "type": "boolean", "advanced": False,
      "description": "开启后后台自动观察前台窗口并生成观察。"},
     {"key": "window_watch_interval_seconds", "group": "watcher", "label": "自动观察间隔(秒)", "type": "number", "advanced": True,
@@ -41,24 +38,17 @@ FIELD_META: list[dict[str, Any]] = [
     {"key": "chat_history_turns", "group": "context", "label": "历史对话轮数", "type": "number", "advanced": False,
      "description": "每次回答时注入的最近对话轮数，用于理解追问。默认 4。"},
     {"key": "window_summary_retrieve_count", "group": "context", "label": "最近窗口观察数", "type": "number", "advanced": False,
-     "description": "注入多少条最近窗口观察作为背景。默认 3。"},
+     "description": "工具检索时可读取的最近窗口观察候选数量提示；观察不会默认注入对话。"},
     {"key": "memory_enabled", "group": "context", "label": "记忆开关", "type": "boolean", "advanced": False,
      "description": "关闭后不再写入或检索短期记忆。默认开。"},
 
     # --- 高级：模型与调用 ---
     {"key": "analyze_temperature", "group": "model", "label": "分析采样温度", "type": "number", "advanced": True, "description": "窗口分析时的采样温度，越低越确定，越高越发散"},
     {"key": "answer_temperature", "group": "model", "label": "问答采样温度", "type": "number", "advanced": True, "description": "追问回答时的采样温度"},
-    {"key": "answer_max_tokens", "group": "model", "label": "问答最大 token", "type": "number", "advanced": True, "description": "追问回答单次生成的最大 token 数"},
-    {"key": "tool_planner_temperature", "group": "model", "label": "工具规划温度", "type": "number", "advanced": True, "description": "工具规划器采样温度，默认 0，越低越稳定"},
-    {"key": "tool_planner_max_tokens", "group": "model", "label": "工具规划 token", "type": "number", "advanced": True, "description": "工具规划器输出 JSON 的最大 token 数"},
-    {"key": "minicpm_ctx_size", "group": "model", "label": "模型上下文长度", "type": "number", "advanced": True, "description": "llama-server 启动时的 ctx_size（改后需重启后端生效）"},
-    {"key": "minicpm_reasoning", "group": "model", "label": "模型思考模式", "type": "segmented", "advanced": True, "options": [{"label": "开启", "value": "on"}, {"label": "自动", "value": "auto"}, {"label": "关闭", "value": "off"}], "description": "llama-server reasoning 模式。改后需重启后端和模型服务。"},
-    {"key": "minicpm_reasoning_format", "group": "model", "label": "思考输出格式", "type": "segmented", "advanced": True, "options": [{"label": "deepseek", "value": "deepseek"}, {"label": "none", "value": "none"}, {"label": "legacy", "value": "deepseek-legacy"}], "description": "deepseek 会把思考放到 reasoning_content，避免污染正文。"},
-    {"key": "minicpm_reasoning_budget", "group": "model", "label": "思考 token 预算", "type": "number", "advanced": True, "description": "llama-server --reasoning-budget。默认 512，避免无限思考拖慢桌宠。"},
+    {"key": "minicpm_reasoning", "group": "model", "label": "模型思考模式", "type": "segmented", "advanced": True, "options": [{"label": "关闭（推荐）", "value": "off"}, {"label": "自动", "value": "auto"}, {"label": "开启", "value": "on"}], "description": "llama-server reasoning 模式。观察 JSON 链路建议关闭；改后需重启后端和模型服务。"},
+    {"key": "minicpm_reasoning_format", "group": "model", "label": "思考输出格式", "type": "segmented", "advanced": True, "options": [{"label": "none（推荐）", "value": "none"}, {"label": "deepseek", "value": "deepseek"}, {"label": "legacy", "value": "deepseek-legacy"}], "description": "reasoning 关闭时使用 none；避免 reasoning_content 或 <think> 污染观察 JSON。"},
 
     # --- 高级：上下文窗口 ---
-    {"key": "chat_history_question_max_chars", "group": "context", "label": "历史问题截断字数", "type": "number", "advanced": True, "description": "注入历史时每条用户问题的最大字符数"},
-    {"key": "chat_history_answer_max_chars", "group": "context", "label": "历史回答截断字数", "type": "number", "advanced": True, "description": "注入历史时每条助手回答的最大字符数"},
     {"key": "history_retention_limit", "group": "context", "label": "历史保留条数", "type": "number", "advanced": True, "description": "历史对话列表最多保留多少条，超出则丢弃最旧的"},
     {"key": "chat_include_screenshot", "group": "context", "label": "对话带截图", "type": "boolean", "advanced": True, "description": "开启后对话时仍附带当前截图；关闭则纯文本对话（推荐关闭，职责分离）"},
     {"key": "window_summary_history_limit", "group": "context", "label": "窗口观察存档条数", "type": "number", "advanced": True, "description": "识图观察服务在 SQLite 中保留多少条窗口观察快照"},
@@ -66,7 +56,6 @@ FIELD_META: list[dict[str, Any]] = [
     # --- 高级：记忆系统 ---
     {"key": "memory_max_items", "group": "memory", "label": "最大记忆条数", "type": "number", "advanced": True, "description": "记忆列表最多保留多少条，超出丢弃最旧的"},
     {"key": "memory_retrieve_count", "group": "memory", "label": "检索注入条数", "type": "number", "advanced": True, "description": "每次回答时检索多少条相关记忆注入提示"},
-    {"key": "memory_item_max_chars", "group": "memory", "label": "单条记忆字符数", "type": "number", "advanced": True, "description": "注入记忆时每条截断到的最大字符数"},
 
     # --- 高级：性格与人设（旧字段，已被 profile md 取代，保留向后兼容）---
     {"key": "personality_enabled", "group": "personality", "label": "启用人设(旧)", "type": "boolean", "advanced": True, "description": "旧字段，已被 profile md 取代。开启后下方的名字/性格/风格将注入提示"},
@@ -84,8 +73,6 @@ FIELD_META: list[dict[str, Any]] = [
     {"key": "llama_server_port", "group": "runtime", "label": "模型服务端口", "type": "number", "advanced": True, "description": "llama-server 监听端口（改后需重启后端）"},
     {"key": "latest_analysis_ttl_seconds", "group": "runtime", "label": "分析缓存TTL(秒)", "type": "number", "advanced": True, "description": "最新窗口分析结果的缓存有效期"},
 
-    # --- 高级：调试审计 ---
-    {"key": "interaction_trace_payload_max_chars", "group": "debug", "label": "交互轨迹最大字符", "type": "number", "advanced": True, "description": "单条交互轨迹 payload 的最大 JSON 字符数，超出会截断，便于调试工具规划与上下文"},
 ]
 
 GROUP_LABELS = {
@@ -138,6 +125,10 @@ def _hot_reload() -> None:
 
 class ConfigUpdateRequest(BaseModel):
     values: dict[str, Any]
+
+
+class RuntimeJsonDeleteRequest(BaseModel):
+    names: list[str]
 
 
 @router.get("/config")
@@ -224,12 +215,215 @@ def clear_window_summaries() -> dict[str, int]:
     return {"cleared": cleared}
 
 
+@router.get("/runtime-store/json")
+def list_runtime_json(limit: int = 200, prefix: str | None = None) -> dict[str, Any]:
+    """查看 RuntimeStore.runtime_json 中真实保存的 key/value。"""
+    store = get_runtime_store()
+    items = store.list_json(limit=max(1, min(limit, 1000)), prefix=prefix or None)
+    return {
+        "items": items,
+        "count": len(items),
+        "status": store.status(),
+    }
+
+
+@router.post("/runtime-store/json/delete")
+def delete_runtime_json(payload: RuntimeJsonDeleteRequest) -> dict[str, Any]:
+    """按 key 删除 RuntimeStore.runtime_json 项。"""
+    deleted = get_runtime_store().delete_many_json(payload.names)
+    return {"deleted": deleted, "requested": payload.names}
+
+
+@router.post("/observations/clear")
+def clear_observations() -> dict[str, int]:
+    """清空窗口观察历史，并删除 latest_analysis。截图文件保留用于人工排查。"""
+    summaries = get_window_summary_store().clear()
+    get_runtime_store().delete("window:latest_analysis")
+    return {"summaries_cleared": summaries, "latest_deleted": 1}
+
+
+@router.post("/memory/clear")
+def clear_memory_items() -> dict[str, int]:
+    """清空 memory:items（长期记忆条目）。working observation 不受影响。"""
+    cleared = get_memory_service().clear_items()
+    return {"cleared": cleared}
+
+
+@router.post("/runtime-events/clear")
+def clear_all_runtime_events() -> dict[str, int]:
+    """清空 runtime_events 全表（含 interaction_trace、system:log 等所有事件）。"""
+    deleted = get_runtime_store().clear_events()
+    return {"deleted": deleted}
+
+
+@router.post("/reset-all")
+def reset_all() -> dict[str, Any]:
+    """一键全清：对话+观察+记忆+日志+trace+FTS5。截图文件保留。
+
+    原子操作：按顺序执行，任一步失败则停止并返回已完成的部分。
+    """
+    results: dict[str, Any] = {}
+    store = get_runtime_store()
+
+    # 1. 对话历史
+    results["conversations"] = get_assistant_chat_service().clear_history()
+    store.delete("assistant:chat:current")
+
+    # 2. 窗口观察
+    results["window_summaries"] = get_window_summary_store().clear()
+    store.delete("window:latest_analysis")
+
+    # 3. 记忆
+    results["memory_items"] = get_memory_service().clear_items()
+    store.delete("memory:working:observation")
+
+    # 4. 事件全表（日志 + trace）
+    results["runtime_events"] = store.clear_events()
+
+    # 5. chat_history FTS5（如果存在）
+    try:
+        from app.services.chat_history_index import get_chat_history_index
+        results["chat_history_fts"] = get_chat_history_index().clear()
+    except Exception:
+        results["chat_history_fts"] = 0
+
+    return {"cleared": results}
+
+def _observation_image_path(record: dict[str, Any]) -> Path:
+    raw_path = str(record.get("screenshot_path") or "").strip()
+    if not raw_path:
+        raise HTTPException(status_code=404, detail="Observation has no screenshot_path.")
+    target = Path(raw_path)
+    if not target.is_absolute():
+        project_relative = (PROJECT_ROOT / target).resolve()
+        cwd_relative = (Path.cwd() / target).resolve()
+        target = project_relative if project_relative.exists() else cwd_relative
+    else:
+        target = target.resolve()
+    capture_root = get_settings().window_capture_dir.resolve()
+    if target != capture_root and capture_root not in target.parents:
+        raise HTTPException(status_code=403, detail="Screenshot path is outside capture directory.")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="Screenshot file does not exist.")
+    return target
+
+
+@router.get("/observations/latest")
+def latest_observation() -> dict[str, Any]:
+    latest = get_window_analysis_service().get_latest()
+    if latest is None:
+        return {"latest": None, "record": None}
+    record = get_window_summary_store().find_by_screenshot_hash(latest.capture.screenshot_hash)
+    return {
+        "latest": latest.model_dump(mode="json"),
+        "record": record,
+    }
+
+
+@router.get("/observations")
+def list_observations(limit: int = 30) -> dict[str, Any]:
+    store = get_window_summary_store()
+    items = store.recent(limit=limit)
+    return {"items": items, "count": len(items)}
+
+
+@router.get("/observations/{record_id}")
+def get_observation(record_id: str) -> dict[str, Any]:
+    record = get_window_summary_store().find_by_record_id(record_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Observation record not found.")
+    return {"record": record}
+
+
+@router.get("/observations/{record_id}/image")
+def get_observation_image(record_id: str) -> FileResponse:
+    record = get_window_summary_store().find_by_record_id(record_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Observation record not found.")
+    return FileResponse(_observation_image_path(record))
+
+
+@router.get("/tool-traces")
+def list_tool_traces(limit: int = 30) -> dict[str, Any]:
+    events = get_runtime_store().list_events(
+        names=["assistant:interaction_trace"],
+        limit=max(1, limit * 4),
+    )
+    tool_events = []
+    for event in events:
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        stage = str(payload.get("stage") or "")
+        if stage in {"tool_calls", "tool_results"}:
+            tool_events.append(event)
+        if len(tool_events) >= limit:
+            break
+    return {"items": tool_events, "count": len(tool_events)}
+
+
+
+def _compact_runtime_log_value(value: Any, *, max_text: int = 2400) -> Any:
+    if isinstance(value, str):
+        if len(value) <= max_text:
+            return value
+        return {
+            "preview": value[:max_text],
+            "truncated_chars": len(value) - max_text,
+        }
+    if isinstance(value, list):
+        visible = value[:80]
+        compacted = [_compact_runtime_log_value(item, max_text=max_text) for item in visible]
+        if len(value) > len(visible):
+            compacted.append({"truncated_items": len(value) - len(visible)})
+        return compacted
+    if isinstance(value, dict):
+        return {
+            str(key): _compact_runtime_log_value(item, max_text=max_text)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _compact_runtime_log_event(event: dict[str, Any]) -> dict[str, Any]:
+    return _compact_runtime_log_value(event)
+
+
+@router.get("/runtime-logs")
+def list_runtime_logs(
+    limit: int = 100,
+    level: str | None = None,
+    component: str | None = None,
+    full: bool = False,
+) -> dict[str, Any]:
+    """返回结构化运行日志，用于定位截图/VLM/写库/工具调用失败。"""
+    items = get_runtime_log_service().list(
+        limit=max(1, min(limit, 500)),
+        level=level,
+        component=component,
+    )
+    if not full:
+        items = [_compact_runtime_log_event(item) for item in items]
+    return {"items": items, "count": len(items), "full": full}
+
+
+@router.delete("/runtime-events/{event_id}")
+def delete_runtime_event(event_id: int) -> dict[str, Any]:
+    deleted = get_runtime_store().delete_event(event_id)
+    return {"deleted": deleted, "event_id": event_id}
+
+
+@router.post("/runtime-logs/clear")
+def clear_runtime_logs() -> dict[str, int]:
+    deleted = get_runtime_store().clear_events(names=[LOG_EVENT_NAME])
+    return {"deleted": deleted}
+
 @router.get("/interaction-traces")
 def list_interaction_traces(
     limit: int = 80,
     session_id: str | None = None,
 ) -> dict[str, Any]:
-    """返回最近交互轨迹，用于高级调试页复盘 planner/tool/messages。"""
+    """返回最近交互轨迹，用于高级调试页复盘 context/messages。"""
     events = get_runtime_store().list_events(
         names=["assistant:interaction_trace"],
         limit=limit,

@@ -235,6 +235,13 @@
   .context-block h5 { margin: 0 0 4px; font-size: 12px; color: var(--accent); }
   .context-turn { padding: 6px 8px; background: var(--panel-2); border-radius: 4px; margin-bottom: 4px; }
   .context-memory { padding: 6px 8px; background: var(--panel-2); border-radius: 4px; margin-bottom: 4px; }
+  .compact-toolbar { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px; flex-wrap:wrap; }
+  .compact-actions { display:flex; gap:8px; flex-wrap:wrap; }
+  .compact-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:8px; margin-bottom:10px; }
+  .compact-metric { background: var(--panel-2); border:1px solid var(--border); border-radius:6px; padding:8px; min-height:58px; }
+  .compact-metric .label { color: var(--text-dim); font-size:11px; margin-bottom:3px; }
+  .compact-metric .value { color: var(--text); font-size:13px; word-break:break-word; }
+  .compact-summary-text { margin:0; background:#07090d; border:1px solid var(--border); border-radius:4px; padding:8px; max-height:220px; overflow:auto; white-space:pre-wrap; word-break:break-word; font-family:Consolas,'Courier New',monospace; font-size:11px; color:var(--text-dim); }
   .badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; background: var(--border); color: var(--text-dim); margin-right: 4px; }
   .badge.on { background: var(--success); color: #06251a; }
   .badge.off { background: var(--border); }
@@ -243,6 +250,49 @@
   .usage-bar > div { height: 100%; background: var(--accent); transition: width 0.2s; }
   .usage-bar > div.warn { background: var(--warn); }
   .usage-bar > div.danger { background: var(--danger); }
+  .observation-toolbar { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:10px; }
+  .observation-list { display:grid; gap:10px; }
+  .observation-card { display:grid; grid-template-columns: 180px 1fr; gap:12px; padding:10px; background:var(--bg); border:1px solid var(--border); border-radius:6px; }
+  .observation-card img { width:180px; max-height:120px; object-fit:contain; background:#050609; border:1px solid var(--border); border-radius:4px; }
+  .observation-meta { color:var(--text-dim); font-size:12px; margin-bottom:6px; }
+  .observation-title { font-weight:600; font-size:13px; margin-bottom:4px; }
+  .observation-fields { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:6px; margin-top:8px; }
+  .observation-field { background:var(--panel-2); border-radius:4px; padding:6px 8px; font-size:12px; }
+  .observation-field strong { color:var(--accent); font-weight:500; }
+  .observation-raw { margin-top:8px; background:#07090d; border:1px solid var(--border); border-radius:4px; padding:8px; max-height:280px; overflow:auto; white-space:pre-wrap; word-break:break-word; font-family:Consolas,'Courier New',monospace; font-size:11px; color:var(--text-dim); }
+  .debug-layout { display:grid; grid-template-columns:minmax(0, 1fr); gap:16px; }
+  .debug-toolbar { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px; flex-wrap:wrap; }
+  .debug-filters { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .debug-filters input, .debug-filters select {
+    background:var(--bg); border:1px solid var(--border); color:var(--text);
+    border-radius:6px; padding:7px 10px; font-size:12px;
+  }
+  .debug-list { display:grid; gap:10px; max-height:640px; overflow:auto; padding-right:2px; }
+  .debug-card { background:var(--bg); border:1px solid var(--border); border-left:4px solid var(--border); border-radius:6px; padding:10px; }
+  .debug-card.window { border-left-color:#38bdf8; }
+  .debug-card.assistant { border-left-color:#a78bfa; }
+  .debug-card.memory { border-left-color:#34d399; }
+  .debug-card.system { border-left-color:#fbbf24; }
+  .debug-card.runtime { border-left-color:#94a3b8; }
+  .debug-card.error { border-left-color:var(--danger); }
+  .debug-card.warning { border-left-color:var(--warn); }
+  .debug-card.info { border-left-color:var(--accent); }
+  .debug-card.debug { border-left-color:#8b94a5; }
+  .debug-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:6px; }
+  .debug-title { font-weight:600; font-size:13px; word-break:break-word; }
+  .debug-meta { color:var(--text-dim); font-size:11px; margin-top:2px; }
+  .debug-actions { display:flex; align-items:center; gap:6px; flex-shrink:0; }
+  .debug-json { margin-top:8px; background:#07090d; border:1px solid var(--border); border-radius:4px; padding:8px; max-height:420px; overflow:auto; white-space:pre-wrap; word-break:break-word; font-family:Consolas,'Courier New',monospace; font-size:11px; color:var(--text-dim); }
+  .debug-summary { font-size:12px; color:var(--text); white-space:pre-wrap; word-break:break-word; }
+  .badge.info { background:rgba(76,141,255,.22); color:#93c5fd; }
+  .badge.debug { background:#2a3140; color:#cbd5e1; }
+  .badge.warning { background:rgba(251,191,36,.22); color:#fde68a; }
+  .badge.error { background:rgba(248,113,113,.22); color:#fecaca; }
+  .badge.window { background:rgba(56,189,248,.18); color:#7dd3fc; }
+  .badge.assistant { background:rgba(167,139,250,.18); color:#c4b5fd; }
+  .badge.memory { background:rgba(52,211,153,.18); color:#86efac; }
+  .badge.system { background:rgba(251,191,36,.18); color:#fde68a; }
+  .badge.runtime { background:#2a3140; color:#cbd5e1; }
 </style>
 </head>
 <body>
@@ -255,6 +305,7 @@
     <div class="tab" data-page="context">上下文</div>
     <div class="tab advanced-only" data-page="chat">对话调试</div>
     <div class="tab advanced-only" data-page="advanced">高级</div>
+    <div class="tab advanced-only" data-page="storage">存储日志</div>
   </div>
   <div class="header-right">
     <label class="advanced-toggle"><input type="checkbox" id="advancedToggle"> 高级设置</label>
@@ -286,7 +337,7 @@
     <div class="group-card" style="margin-top:16px;">
       <h3>快速入口</h3>
       <div class="fields">
-        <div class="field-desc">在「识别」页调整视觉清晰度与分析详细度；在「角色」页编辑助手画像；在「上下文」页预览对话将注入的内容。打开右上角「高级设置」可查看底层参数与对话调试台。</div>
+        <div class="field-desc">识别链路固定使用模型可承载的高质量观察配置；在「角色」页编辑助手画像；在「上下文」页预览对话将注入的内容。打开右上角「高级设置」可查看运行参数；在「存储日志」页查看 SQLite、日志和观察记录。</div>
       </div>
     </div>
   </div>
@@ -335,6 +386,16 @@
       <button class="btn btn-primary" id="contextSaveBtn">保存并热重载</button>
     </div>
     <div class="context-section">
+      <div class="compact-toolbar">
+        <h4 style="margin:0;">Compact 状态</h4>
+        <div class="compact-actions">
+          <button class="btn" id="refreshCompactBtn">刷新</button>
+          <button class="btn btn-primary" id="runCompactBtn">立即 compact</button>
+        </div>
+      </div>
+      <div class="context-display" id="compactStatusPanel"><span class="placeholder">加载中…</span></div>
+    </div>
+    <div class="context-section">
       <h4>上下文预览（预览将注入的内容，不会真正调用模型）</h4>
       <div class="chat-input-row" style="margin-bottom:8px;">
         <input type="text" id="contextInput" placeholder="输入要预览的问题…" style="flex:1;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px 10px;font-size:13px;">
@@ -379,13 +440,71 @@
     <div class="group-card">
       <h3>高级字段</h3>
       <div class="fields">
-        <div class="field-desc">以下字段修改后可能需要重启后端才能完全生效。普通用户无需调整。</div>
+        <div class="field-desc">以下字段修改后可能需要重启后端才能完全生效。普通用户无需调整。日志、SQLite 和观察记录已移到「存储日志」页。</div>
       </div>
     </div>
     <div id="advancedGroups"></div>
     <div class="actions">
       <button class="btn" id="resetBtn">重置为默认</button>
       <button class="btn btn-primary" id="advancedSaveBtn">保存并热重载</button>
+    </div>
+  </div>
+
+  <!-- 存储日志页（高级） -->
+  <div class="page" id="page-storage">
+    <div class="debug-layout">
+      <div class="group-card">
+        <h3>RuntimeStore JSON（SQLite runtime_json）</h3>
+        <div class="fields">
+          <div class="debug-toolbar">
+            <div class="field-desc">查看 SQLite 中真实保存的 key/value：window:latest_analysis、window:summaries、assistant 状态、对话历史、记忆等。</div>
+            <div class="debug-filters">
+              <input id="runtimeJsonPrefix" placeholder="prefix，例如 window:" />
+              <button class="btn" id="refreshRuntimeJsonBtn">刷新存储</button>
+              <button class="btn btn-danger" id="deleteSelectedRuntimeJsonBtn">删除选中</button>
+            </div>
+          </div>
+          <div id="runtimeStoreStatus" class="context-display" style="max-height:120px;margin-bottom:10px;"><span class="placeholder">加载中…</span></div>
+          <div id="runtimeJsonList" class="debug-list"><div class="history-empty">加载中…</div></div>
+        </div>
+      </div>
+
+      <div class="group-card">
+        <h3>观察存储（window:latest_analysis / window:summaries + 截图）</h3>
+        <div class="fields">
+          <div class="debug-toolbar">
+            <div class="field-desc">查看结构化观察字段、截图、vision_input、regions 和 raw JSON。这里展示的是存储证据，不代表默认注入对话。</div>
+            <div class="debug-filters">
+              <button class="btn" id="refreshObservationsBtn">刷新观察</button>
+              <button class="btn btn-danger" id="clearObservationsBtn">清空观察</button>
+            </div>
+          </div>
+          <div id="latestObservationBox" class="context-display" style="max-height:260px;margin-bottom:12px;"><span class="placeholder">加载中…</span></div>
+          <div id="observationList" class="observation-list"><div class="history-empty">加载中…</div></div>
+        </div>
+      </div>
+
+      <div class="group-card">
+        <h3>运行日志（SQLite runtime_events / system:log）</h3>
+        <div class="fields">
+          <div class="debug-toolbar">
+            <div class="field-desc">查看截图、VLM 请求、解析、写库和异常 traceback。日志只用于审计，不注入对话。</div>
+            <div class="debug-filters">
+              <select id="runtimeLogLevel">
+                <option value="">全部级别</option>
+                <option value="error">error</option>
+                <option value="warning">warning</option>
+                <option value="info">info</option>
+                <option value="debug">debug</option>
+              </select>
+              <input id="runtimeLogComponent" placeholder="component，例如 vision_model" />
+              <button class="btn" id="refreshRuntimeLogsBtn">刷新日志</button>
+              <button class="btn btn-danger" id="clearRuntimeLogsBtn">清空日志</button>
+            </div>
+          </div>
+          <div class="trace-list" id="runtimeLogList" style="max-height:620px;"><div class="history-empty">加载中…</div></div>
+        </div>
+      </div>
     </div>
   </div>
 </main>
@@ -437,6 +556,8 @@ document.querySelectorAll(".tab").forEach(tab => {
     if (tab.dataset.page === "profile") loadProfile();
     if (tab.dataset.page === "overview") loadOverview();
     if (tab.dataset.page === "vision" || tab.dataset.page === "context" || tab.dataset.page === "advanced") loadConfig();
+    if (tab.dataset.page === "context") loadCompactStatus();
+    if (tab.dataset.page === "storage") { loadRuntimeJson(); loadObservations(); loadRuntimeLogs(); }
   });
 });
 
@@ -469,7 +590,7 @@ async function loadOverview() {
     const latest = await fetchJSON("/api/assistant/latest");
     if (latest && latest.capture) {
       document.getElementById("overviewWindow").textContent = `${latest.capture.app_name || ""} · ${latest.capture.window_title || ""}`.replace(/^·\s*|·\s*$/, "");
-      document.getElementById("overviewSummary").textContent = (latest.analysis && latest.analysis.summary) ? String(latest.analysis.summary).slice(0, 120) : "—";
+      document.getElementById("overviewSummary").textContent = (latest.analysis && latest.analysis.summary) ? String(latest.analysis.summary) : "—";
     } else {
       document.getElementById("overviewWindow").textContent = "尚无观察结果";
       document.getElementById("overviewSummary").textContent = "自动观察运行后会在这里显示。";
@@ -660,7 +781,7 @@ async function loadHistory() {
     list.innerHTML = data.items.map(s => `
       <div class="history-item" data-session='${escapeHTML(JSON.stringify(s))}'>
         <div class="history-q">${escapeHTML(s.question)}</div>
-        <div class="history-a">${escapeHTML(s.answer.slice(0, 80))}${s.answer.length > 80 ? "…" : ""}</div>
+        <div class="history-a">${escapeHTML(s.answer)}</div>
         <div class="history-time">${new Date(s.updated_at).toLocaleString("zh-CN")}</div>
       </div>
     `).join("");
@@ -760,6 +881,20 @@ document.getElementById("chatInput").addEventListener("keydown", e => {
   if (e.ctrlKey && e.key === "Enter") sendQuestion();
 });
 
+function compactTraceSummary(stage, payload) {
+  if (!String(stage || "").startsWith("context_summary.")) return "";
+  const body = payload && typeof payload === "object" && payload.payload && typeof payload.payload === "object"
+    ? payload.payload
+    : (payload || {});
+  const parts = [];
+  if (body.status) parts.push(`状态 ${body.status}`);
+  if (body.trigger) parts.push(`触发 ${body.trigger}`);
+  if (typeof body.compacted === "boolean") parts.push(`compacted ${body.compacted}`);
+  if (body.covered_session_count !== undefined) parts.push(`覆盖 ${body.covered_session_count}`);
+  if (body.summary_tokens !== undefined) parts.push(`summary ${body.summary_tokens} tokens`);
+  if (body.error_type || body.error_message) parts.push(`错误 ${(body.error_type || "")}${body.error_message ? ": " + body.error_message : ""}`);
+  return parts.join(" · ");
+}
 async function loadTraces(sessionId = selectedTraceSessionId) {
   const list = document.getElementById("traceList");
   const title = document.getElementById("traceTitle");
@@ -777,9 +912,11 @@ async function loadTraces(sessionId = selectedTraceSessionId) {
       const sid = payload.session_id ? String(payload.session_id).slice(0, 8) : "—";
       const time = event.created_at ? new Date(event.created_at).toLocaleString("zh-CN") : "";
       const body = JSON.stringify(payload.payload || payload, null, 2);
+      const compactLine = compactTraceSummary(stage, payload);
       return `
         <div class="trace-item">
           <div class="trace-stage"><span>${escapeHTML(stage)} · ${escapeHTML(sid)}</span><span>${escapeHTML(time)}</span></div>
+          ${compactLine ? `<div class="debug-summary" style="margin-bottom:4px;">${escapeHTML(compactLine)}</div>` : ""}
           <pre class="trace-payload">${escapeHTML(body)}</pre>
         </div>`;
     }).join("");
@@ -801,8 +938,78 @@ document.getElementById("clearHistoryBtn").addEventListener("click", async () =>
   }
 });
 
+// ---------- Compact 状态 ----------
+function compactTime(value) {
+  return value ? new Date(value).toLocaleString("zh-CN") : "—";
+}
+
+function compactBadge(enabled, label) {
+  return `<span class="badge ${enabled ? "on" : "off"}">${escapeHTML(label)}</span>`;
+}
+
+async function loadCompactStatus() {
+  const panel = document.getElementById("compactStatusPanel");
+  panel.innerHTML = `<span class="placeholder">加载中…</span>`;
+  try {
+    const data = await fetchJSON("/api/assistant/compact-status");
+    renderCompactStatus(data);
+  } catch (e) {
+    panel.innerHTML = `<span class="badge error">加载失败</span> ${escapeHTML(e.message)}`;
+  }
+}
+
+function renderCompactStatus(data) {
+  const panel = document.getElementById("compactStatusPanel");
+  const summary = data.summary || {};
+  const metrics = data.metrics || {};
+  const lock = data.lock || {};
+  const planner = data.planner || {};
+  const statusClass = metrics.last_status === "error" ? "error" : (metrics.last_status === "ok" ? "on" : "off");
+  const lockLabel = lock.active ? `active · ${lock.source || "—"}` : "inactive";
+  panel.innerHTML = `
+    <div class="compact-grid">
+      <div class="compact-metric"><div class="label">开关</div><div class="value">${compactBadge(data.enabled, "enabled")}${compactBadge(data.auto_enabled, "auto")}</div></div>
+      <div class="compact-metric"><div class="label">summary</div><div class="value">${summary.present ? "已生成" : "空"} · ${summary.tokens || 0} tokens · ${summary.chars || 0} 字</div></div>
+      <div class="compact-metric"><div class="label">覆盖</div><div class="value">${summary.covered_session_count || 0} / ${summary.source_session_count || 0}</div></div>
+      <div class="compact-metric"><div class="label">最近状态</div><div class="value"><span class="badge ${statusClass}">${escapeHTML(metrics.last_status || "idle")}</span>${metrics.source_tokens || 0} source tokens</div></div>
+      <div class="compact-metric"><div class="label">更新时间</div><div class="value">${escapeHTML(compactTime(summary.updated_at || metrics.last_finished_at))}</div></div>
+      <div class="compact-metric"><div class="label">lock</div><div class="value">${escapeHTML(lockLabel)}${lock.expires_at ? ` · ${escapeHTML(compactTime(lock.expires_at))}` : ""}</div></div>
+    </div>
+    <div class="context-block">
+      <h5>planner</h5>
+      <div>tail ${planner.raw_tail_turns ?? "—"} · batch ${planner.batch_session_limit ?? "—"} · source budget ${planner.source_budget_tokens ?? "—"} · threshold ${planner.uncovered_session_threshold ?? "—"}/${planner.history_trigger_tokens ?? "—"}</div>
+    </div>
+    ${metrics.error_message ? `<div class="context-block"><h5>最近错误</h5><div><span class="badge error">${escapeHTML(metrics.error_type || "Error")}</span>${escapeHTML(metrics.error_message)}</div></div>` : ""}
+    <div class="context-block">
+      <h5>covered tail</h5>
+      <div>${(summary.covered_session_ids_tail || []).length ? (summary.covered_session_ids_tail || []).map(id => `<span class="badge">${escapeHTML(id)}</span>`).join("") : "—"}</div>
+    </div>
+    <div class="context-block">
+      <h5>summary 文本</h5>
+      <pre class="compact-summary-text">${escapeHTML(summary.text || "(空)")}</pre>
+    </div>`;
+}
+
+async function runCompactNow() {
+  const btn = document.getElementById("runCompactBtn");
+  btn.disabled = true;
+  btn.textContent = "运行中…";
+  try {
+    const result = await fetchJSON("/api/assistant/compact", { method: "POST" });
+    showToast(`compact ${result.status || "done"}`);
+    await loadCompactStatus();
+    const q = document.getElementById("contextInput").value.trim();
+    if (q) await previewContext();
+  } catch (e) {
+    showToast("compact 失败：" + e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "立即 compact";
+  }
+}
+
 // ---------- 上下文预览 ----------
-document.getElementById("previewCtxBtn").addEventListener("click", async () => {
+async function previewContext() {
   const q = document.getElementById("contextInput").value.trim();
   if (!q) { showToast("请输入要预览的问题", true); return; }
   const display = document.getElementById("contextDisplay");
@@ -816,8 +1023,11 @@ document.getElementById("previewCtxBtn").addEventListener("click", async () => {
   } catch (e) {
     display.innerHTML = `[预览失败] ${escapeHTML(e.message)}`;
   }
-});
+}
 
+document.getElementById("refreshCompactBtn").addEventListener("click", loadCompactStatus);
+document.getElementById("runCompactBtn").addEventListener("click", runCompactNow);
+document.getElementById("previewCtxBtn").addEventListener("click", previewContext);
 function renderContext(ctx, q) {
   const display = document.getElementById("contextDisplay");
   const histHtml = ctx.chat_history.length === 0
@@ -825,7 +1035,7 @@ function renderContext(ctx, q) {
     : ctx.chat_history.map(s => `
         <div class="context-turn">
           <div><strong>用户：</strong>${escapeHTML(s.question)}</div>
-          <div><strong>助手：</strong>${escapeHTML(s.answer.slice(0, 200))}${s.answer.length > 200 ? "…" : ""}</div>
+          <div><strong>助手：</strong>${escapeHTML(s.answer)}</div>
         </div>`).join("");
   const memHtml = !ctx.memory_enabled
     ? `<div class="history-empty">记忆已关闭</div>`
@@ -833,21 +1043,21 @@ function renderContext(ctx, q) {
       ? `<div class="history-empty">无相关记忆</div>`
       : ctx.memory_items.map(m => `
           <div class="context-memory">
-            <span class="badge">${escapeHTML(m.kind)}</span>${escapeHTML(m.text.slice(0, 220))}${m.text.length > 220 ? "…" : ""}
+            <span class="badge">${escapeHTML(m.kind)}</span>${escapeHTML(m.text)}
           </div>`).join("");
-  const winSumHtml = !ctx.window_summaries || ctx.window_summaries.length === 0
+  const winSumHtml = !ctx.window_observations || ctx.window_observations.length === 0
     ? `<div class="history-empty">无窗口观察存档</div>`
-    : ctx.window_summaries.map(w => {
+    : ctx.window_observations.map(w => {
         const ts = String(w.created_at || "").slice(0, 19).replace("T", " ");
         const head = `[${escapeHTML(ts)}] ${escapeHTML(w.app_name || "")} · ${escapeHTML(w.window_title || "")}`.replace(/·\s*$/, "");
-        return `<div class="context-memory"><span class="badge">${escapeHTML(w.window_type || "")}</span>${head}<br>${escapeHTML((w.summary || "").slice(0, 220))}${(w.summary || "").length > 220 ? "…" : ""}</div>`;
+        return `<div class="context-memory"><span class="badge">${escapeHTML(w.window_type || "")}</span>${head}<br>${escapeHTML(w.summary || "")}</div>`;
       }).join("");
 
   // 上下文使用率（Phase 6）
   const usage = ctx.usage || null;
   const modeLabel = (m) => ({
-    agent_orchestrated: "工具编排",
-    companion: "陪伴回应",
+    context_direct: "直接上下文",
+    tool_auto: "工具自取",
   })[m] || m;
   let usageHtml = "";
   if (usage) {
@@ -858,7 +1068,8 @@ function renderContext(ctx, q) {
         <h5>上下文使用率</h5>
         <div>本次回答模式：<strong>${escapeHTML(modeLabel(usage.answer_mode))}</strong>${usage.selected_image ? `｜使用截图：${escapeHTML(usage.selected_image)}（${escapeHTML(usage.selected_reason || "")}）` : ""}</div>
         <div style="margin-top:4px;">注册工具：${usage.registered_tool_count || 0} 个｜工具 manifest 约 ${usage.tool_manifest_chars || 0} 字</div>
-        <div style="margin-top:4px;">注入内容：profile 约 ${usage.profile_chars} 字｜当前观察约 ${usage.current_summary_chars} 字｜最近窗口观察 ${usage.recent_summaries_count} 条/约 ${usage.recent_summaries_chars} 字｜记忆 ${usage.memory_count} 条/约 ${usage.memory_chars} 字｜对话历史 ${usage.dialogue_turns} 轮/约 ${usage.dialogue_chars} 字</div>
+        <div style="margin-top:4px;">注入内容：profile 约 ${usage.profile_chars} 字｜窗口观察注入约 ${usage.current_observation_chars ?? usage.current_summary_chars} 字｜最近观察注入 ${usage.recent_observations_count ?? usage.recent_summaries_count} 条/约 ${usage.recent_observations_chars ?? usage.recent_summaries_chars} 字｜记忆 ${usage.memory_count} 条/约 ${usage.memory_chars} 字｜对话历史 ${usage.dialogue_turns} 轮/约 ${usage.dialogue_chars} 字</div>
+        <div style="margin-top:4px;">工具可读取：当前窗口观察约 ${usage.available_current_observation_chars || 0} 字｜最近窗口观察 ${usage.available_recent_observations_count || 0} 条/约 ${usage.available_recent_observations_chars || 0} 字</div>
         <div style="margin-top:4px;">预算估算：约 ${usage.estimated_tokens} tokens / ${usage.ctx_size}（${pct}%）</div>
         <div class="usage-bar"><div class="${cls}" style="width:${pct}%"></div></div>
       </div>`;
@@ -875,21 +1086,8 @@ function renderContext(ctx, q) {
       <div>${escapeHTML(q)}</div>
     </div>
     <div class="context-block">
-      <h5>情境状态</h5>
-      <div>标签：<strong>${escapeHTML((ctx.situation||{}).situation_label || "ambient_idle")}</strong>｜情绪：${escapeHTML((ctx.situation||{}).user_mood_hint || "neutral")}｜意图：${escapeHTML((ctx.situation||{}).likely_intent || "chat")}</div>
-      <div style="margin-top:4px;color:var(--text-dim);">主动提示策略：${escapeHTML((ctx.situation||{}).interrupt_policy || "silent")}${(ctx.situation||{}).companion_line ? "｜" + escapeHTML(ctx.situation.companion_line) : ""}</div>
-    </div>
-    <div class="context-block advanced-only">
-      <h5>主动提示判断（Interaction Policy）</h5>
-      <div>可以主动提示：${(ctx.proactive_nudge||{}).should_speak ? "<span class='badge on'>是</span>" : "<span class='badge off'>否</span>"}${(ctx.proactive_nudge||{}).line ? "｜" + escapeHTML(ctx.proactive_nudge.line) : ""}</div>
-    </div>
-    <div class="context-block advanced-only">
-      <h5>用户最近目标与困惑（${(ctx.user_goals||[]).length} 条）</h5>
-      ${(ctx.user_goals||[]).length ? (ctx.user_goals||[]).map(g => `<div style="font-size:12px;color:var(--text-dim);margin:2px 0;">[${escapeHTML(g.situation_label)}] ${escapeHTML(g.user_mood_hint)}/${escapeHTML(g.likely_intent)}：${escapeHTML(g.question||"")}</div>`).join("") : "<div style='color:var(--text-dim);'>暂无记录</div>"}
-    </div>
-    <div class="context-block">
-      <h5>当前窗口分析</h5>
-      <div>${ctx.latest_analysis_present ? escapeHTML(ctx.latest_summary || "—") : "<span class='badge off'>无分析结果</span>"}</div>
+      <h5>工具可读取：当前窗口观察（不会默认注入）</h5>
+      <div>${ctx.latest_analysis_present ? escapeHTML(ctx.latest_observation || ctx.latest_summary || "—") : "<span class='badge off'>无分析结果</span>"}</div>
     </div>
     <div class="context-block advanced-only">
       <h5>profile_packet（profile md，${(ctx.profile_packet || "").length} 字符）</h5>
@@ -904,7 +1102,7 @@ function renderContext(ctx, q) {
       </div>
     </div>
     <div class="context-block">
-      <h5>历史窗口观察（${ctx.window_summaries ? ctx.window_summaries.length : 0} 条，设置：${ctx.window_summary_retrieve_count_setting}）</h5>
+      <h5>工具可读取：历史窗口观察（${ctx.window_observations ? ctx.window_observations.length : 0} 条，不会默认注入）</h5>
       ${winSumHtml}
     </div>
     <div class="context-block">
@@ -971,6 +1169,271 @@ document.getElementById("reloadProfileBtn").addEventListener("click", async () =
   }
 });
 
+// ---------- 存储日志页 ----------
+function debugKindForName(name) {
+  const value = String(name || "");
+  if (value.startsWith("window:")) return "window";
+  if (value.startsWith("assistant:")) return "assistant";
+  if (value.startsWith("memory:")) return "memory";
+  if (value.startsWith("system:")) return "system";
+  return "runtime";
+}
+
+function shortValue(value) {
+  if (value == null) return "—";
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return `${value.length} items`;
+  if (typeof value === "object") return Object.keys(value).slice(0, 8).join(", ") || "{}";
+  return String(value);
+}
+
+async function loadRuntimeJson() {
+  const list = document.getElementById("runtimeJsonList");
+  const statusBox = document.getElementById("runtimeStoreStatus");
+  if (!list || !statusBox) return;
+  list.innerHTML = `<div class="history-empty">加载中…</div>`;
+  statusBox.innerHTML = `<span class="placeholder">加载中…</span>`;
+  try {
+    const prefix = (document.getElementById("runtimeJsonPrefix")?.value || "").trim();
+    const query = new URLSearchParams({ limit: "300" });
+    if (prefix) query.set("prefix", prefix);
+    const data = await fetchJSON(`/api/webui/runtime-store/json?${query.toString()}`);
+    const status = data.status || {};
+    statusBox.innerHTML = `
+      <div><span class="badge ${status.available ? "on" : "error"}">${status.available ? "available" : "unavailable"}</span> ${escapeHTML(status.path || "")}</div>
+      ${status.last_error ? `<div style="color:var(--danger);margin-top:4px;">${escapeHTML(status.last_error)}</div>` : ""}
+      <div class="debug-meta">显示 ${data.count || 0} 个 runtime_json key${prefix ? `｜prefix=${escapeHTML(prefix)}` : ""}</div>`;
+    const items = data.items || [];
+    list.innerHTML = items.length
+      ? items.map(renderRuntimeJsonCard).join("")
+      : `<div class="history-empty">暂无 RuntimeStore JSON 项</div>`;
+  } catch (e) {
+    statusBox.innerHTML = `<span class="badge error">加载失败</span> ${escapeHTML(e.message)}`;
+    list.innerHTML = `<div class="history-empty">加载失败：${escapeHTML(e.message)}</div>`;
+  }
+}
+
+function renderRuntimeJsonCard(item) {
+  const name = String(item.name || "");
+  const kind = debugKindForName(name);
+  const payload = item.payload;
+  const payloadText = item.payload_text || JSON.stringify(payload, null, 2);
+  const summary = shortValue(payload);
+  return `
+    <div class="debug-card ${kind}">
+      <div class="debug-head">
+        <div>
+          <div class="debug-title"><input type="checkbox" class="runtime-json-check" data-json-name="${escapeHTML(name)}"> <span class="badge ${kind}">${escapeHTML(kind)}</span> ${escapeHTML(name)}</div>
+          <div class="debug-meta">updated_at=${escapeHTML(item.updated_at || "—")}｜chars=${item.payload_chars || 0}${item.expires_at ? `｜expires_at=${escapeHTML(item.expires_at)}` : ""}${item.expired ? "｜expired" : ""}</div>
+        </div>
+        <div class="debug-actions"><button class="btn btn-danger runtime-json-delete" data-json-name="${escapeHTML(name)}" style="padding:2px 8px;font-size:11px;">删除</button></div>
+      </div>
+      <div class="debug-summary">${escapeHTML(summary)}</div>
+      <details><summary>raw JSON</summary><pre class="debug-json">${escapeHTML(payloadText)}</pre></details>
+    </div>`;
+}
+
+async function deleteRuntimeJsonNames(names) {
+  const clean = names.filter(Boolean);
+  if (clean.length === 0) { showToast("没有选中 key", true); return; }
+  if (!confirm(`删除 ${clean.length} 个 runtime_json key？`)) return;
+  try {
+    const res = await fetchJSON("/api/webui/runtime-store/json/delete", {
+      method: "POST",
+      body: JSON.stringify({ names: clean }),
+    });
+    showToast(`已删除 ${res.deleted} 个 key`);
+    loadRuntimeJson();
+    loadObservations();
+  } catch (e) {
+    showToast("删除失败：" + e.message, true);
+  }
+}
+
+async function loadObservations() {
+  const latestBox = document.getElementById("latestObservationBox");
+  const list = document.getElementById("observationList");
+  if (!latestBox || !list) return;
+  latestBox.innerHTML = `<span class="placeholder">加载中…</span>`;
+  list.innerHTML = `<div class="history-empty">加载中…</div>`;
+  try {
+    const [latest, history] = await Promise.all([
+      fetchJSON("/api/webui/observations/latest"),
+      fetchJSON("/api/webui/observations?limit=30"),
+    ]);
+    latestBox.innerHTML = renderLatestObservation(latest);
+    const items = history.items || [];
+    list.innerHTML = items.length
+      ? items.slice().reverse().map(renderObservationCard).join("")
+      : `<div class="history-empty">暂无窗口观察记录</div>`;
+  } catch (e) {
+    latestBox.innerHTML = `[加载失败] ${escapeHTML(e.message)}`;
+    list.innerHTML = `<div class="history-empty">加载失败：${escapeHTML(e.message)}</div>`;
+  }
+}
+
+function renderLatestObservation(data) {
+  const latest = data && data.latest;
+  const record = data && data.record;
+  if (!latest) return `<span class="badge off">无 latest_analysis</span>`;
+  const capture = latest.capture || {};
+  const analysis = latest.analysis || {};
+  const recordLine = record ? `record_id: ${escapeHTML(record.record_id || "—")}` : "未匹配到 window:summaries 记录";
+  return `
+    <div class="observation-title"><span class="badge window">latest</span> ${escapeHTML(capture.app_name || "")} · ${escapeHTML(capture.window_title || "")}</div>
+    <div class="observation-meta">${escapeHTML(latest.analyzed_at || "")}｜${escapeHTML(analysis.window_type || "")}｜${escapeHTML(recordLine)}</div>
+    <div>${escapeHTML(analysis.summary || "—")}</div>
+    <details style="margin-top:8px;"><summary>raw latest_analysis</summary><pre class="observation-raw">${escapeHTML(JSON.stringify(latest, null, 2))}</pre></details>`;
+}
+
+function renderObservationCard(record) {
+  const id = record.record_id || "";
+  const image = id ? `<img src="/api/webui/observations/${encodeURIComponent(id)}/image" alt="screenshot">` : `<div></div>`;
+  const keyPoints = Array.isArray(record.key_points) ? record.key_points.join("；") : "";
+  const visibleText = Array.isArray(record.visible_text) ? record.visible_text.join("；") : "";
+  const ui = Array.isArray(record.ui_elements) ? record.ui_elements.join("；") : "";
+  const entities = Array.isArray(record.entities) ? record.entities.join("；") : "";
+  const uncertain = Array.isArray(record.uncertain_areas) ? record.uncertain_areas.join("；") : "";
+  const regions = Array.isArray(record.regions) ? record.regions : [];
+  const regionsHtml = regions.length
+    ? regions.map(r => {
+        const texts = Array.isArray(r.visible_text) ? r.visible_text.join("；") : "";
+        const controls = Array.isArray(r.ui_elements) ? r.ui_elements.join("；") : "";
+        return `<div class="observation-field"><strong>${escapeHTML(r.name || "区域")}</strong><br>${escapeHTML(r.location || "")} ${escapeHTML(r.content || "")}<br>${texts ? `文字：${escapeHTML(texts)}<br>` : ""}${controls ? `控件：${escapeHTML(controls)}` : ""}</div>`;
+      }).join("")
+    : `<div class="observation-field"><strong>regions</strong><br>—</div>`;
+  return `
+    <div class="observation-card">
+      <div>${image}</div>
+      <div>
+        <div class="observation-title"><span class="badge window">observation</span> ${escapeHTML(record.app_name || "")} · ${escapeHTML(record.window_title || "")}</div>
+        <div class="observation-meta">${escapeHTML(record.created_at || "")}｜${escapeHTML(record.window_type || "")}｜${escapeHTML(id || "no-record-id")}</div>
+        <div>${escapeHTML(record.summary || "—")}</div>
+        <div class="observation-fields">
+          <div class="observation-field"><strong>key_points</strong><br>${escapeHTML(keyPoints || "—")}</div>
+          <div class="observation-field"><strong>visible_text</strong><br>${escapeHTML(visibleText || "—")}</div>
+          <div class="observation-field"><strong>ui_elements</strong><br>${escapeHTML(ui || "—")}</div>
+          <div class="observation-field"><strong>entities</strong><br>${escapeHTML(entities || "—")}</div>
+          <div class="observation-field"><strong>uncertain_areas</strong><br>${escapeHTML(uncertain || "—")}</div>
+          <div class="observation-field"><strong>screenshot</strong><br>${escapeHTML(record.screenshot_hash || "—")}</div>
+          ${regionsHtml}
+        </div>
+        <details style="margin-top:8px;"><summary>raw JSON / regions / vision_input</summary><pre class="observation-raw">${escapeHTML(JSON.stringify(record, null, 2))}</pre></details>
+      </div>
+    </div>`;
+}
+
+async function clearObservations() {
+  if (!confirm("清空 window:summaries 并删除 window:latest_analysis？截图文件会保留。")) return;
+  try {
+    const res = await fetchJSON("/api/webui/observations/clear", { method: "POST" });
+    showToast(`已清空观察：history ${res.summaries_cleared || 0} 条`);
+    loadObservations();
+    loadRuntimeJson();
+  } catch (e) {
+    showToast("清空观察失败：" + e.message, true);
+  }
+}
+
+async function loadRuntimeLogs() {
+  const list = document.getElementById("runtimeLogList");
+  if (!list) return;
+  list.innerHTML = `<div class="history-empty">加载中…</div>`;
+  try {
+    const query = new URLSearchParams({ limit: "200" });
+    const level = (document.getElementById("runtimeLogLevel")?.value || "").trim();
+    const component = (document.getElementById("runtimeLogComponent")?.value || "").trim();
+    if (level) query.set("level", level);
+    if (component) query.set("component", component);
+    const data = await fetchJSON(`/api/webui/runtime-logs?${query.toString()}`);
+    const items = data.items || [];
+    list.innerHTML = items.length
+      ? items.map(renderRuntimeLog).join("")
+      : `<div class="history-empty">暂无运行日志</div>`;
+  } catch (e) {
+    list.innerHTML = `<div class="history-empty">加载失败：${escapeHTML(e.message)}</div>`;
+  }
+}
+
+function renderRuntimeLog(event) {
+  const payload = event.payload || {};
+  const fields = payload.fields || {};
+  const exception = payload.exception || null;
+  const level = String(payload.level || "info");
+  const time = payload.ts || event.created_at || "";
+  const component = payload.component || "runtime";
+  const title = `${component}.${payload.action || "event"}`;
+  const exceptionHtml = exception
+    ? `<details style="margin-top:6px;"><summary><span class="badge error">${escapeHTML(exception.type || "Exception")}</span> ${escapeHTML(exception.message || "")}</summary><pre class="trace-payload">${escapeHTML(exception.traceback || "")}</pre></details>`
+    : "";
+  return `
+    <div class="debug-card ${level}">
+      <div class="debug-head">
+        <div>
+          <div class="debug-title"><span class="badge ${level}">${escapeHTML(level)}</span> ${escapeHTML(title)}</div>
+          <div class="debug-meta">event_id=${event.id || "—"}｜${escapeHTML(time)}</div>
+        </div>
+        <div class="debug-actions"><button class="btn btn-danger runtime-event-delete" data-event-id="${event.id || ""}" style="padding:2px 8px;font-size:11px;">删除</button></div>
+      </div>
+      <div class="debug-summary">${escapeHTML(payload.message || "")}</div>
+      <details open><summary>fields</summary><pre class="trace-payload">${escapeHTML(JSON.stringify(fields, null, 2))}</pre></details>
+      ${exceptionHtml}
+    </div>`;
+}
+
+async function deleteRuntimeEvent(eventId) {
+  if (!eventId) return;
+  try {
+    await fetchJSON(`/api/webui/runtime-events/${encodeURIComponent(eventId)}`, { method: "DELETE" });
+    showToast("已删除日志事件");
+    loadRuntimeLogs();
+  } catch (e) {
+    showToast("删除日志失败：" + e.message, true);
+  }
+}
+
+async function clearRuntimeLogs() {
+  if (!confirm("清空所有 system:log 运行日志？")) return;
+  try {
+    const res = await fetchJSON("/api/webui/runtime-logs/clear", { method: "POST" });
+    showToast(`已清空 ${res.deleted || 0} 条日志`);
+    loadRuntimeLogs();
+  } catch (e) {
+    showToast("清空日志失败：" + e.message, true);
+  }
+}
+
+const refreshRuntimeJsonBtn = document.getElementById("refreshRuntimeJsonBtn");
+if (refreshRuntimeJsonBtn) refreshRuntimeJsonBtn.addEventListener("click", loadRuntimeJson);
+const runtimeJsonPrefix = document.getElementById("runtimeJsonPrefix");
+if (runtimeJsonPrefix) runtimeJsonPrefix.addEventListener("keydown", e => { if (e.key === "Enter") loadRuntimeJson(); });
+const deleteSelectedRuntimeJsonBtn = document.getElementById("deleteSelectedRuntimeJsonBtn");
+if (deleteSelectedRuntimeJsonBtn) deleteSelectedRuntimeJsonBtn.addEventListener("click", () => {
+  const names = Array.from(document.querySelectorAll(".runtime-json-check:checked")).map(el => el.dataset.jsonName || "");
+  deleteRuntimeJsonNames(names);
+});
+const runtimeJsonList = document.getElementById("runtimeJsonList");
+if (runtimeJsonList) runtimeJsonList.addEventListener("click", e => {
+  const btn = e.target.closest(".runtime-json-delete");
+  if (btn) deleteRuntimeJsonNames([btn.dataset.jsonName || ""]);
+});
+const refreshObservationsBtn = document.getElementById("refreshObservationsBtn");
+if (refreshObservationsBtn) refreshObservationsBtn.addEventListener("click", loadObservations);
+const clearObservationsBtn = document.getElementById("clearObservationsBtn");
+if (clearObservationsBtn) clearObservationsBtn.addEventListener("click", clearObservations);
+const refreshRuntimeLogsBtn = document.getElementById("refreshRuntimeLogsBtn");
+if (refreshRuntimeLogsBtn) refreshRuntimeLogsBtn.addEventListener("click", loadRuntimeLogs);
+const clearRuntimeLogsBtn = document.getElementById("clearRuntimeLogsBtn");
+if (clearRuntimeLogsBtn) clearRuntimeLogsBtn.addEventListener("click", clearRuntimeLogs);
+const runtimeLogLevel = document.getElementById("runtimeLogLevel");
+if (runtimeLogLevel) runtimeLogLevel.addEventListener("change", loadRuntimeLogs);
+const runtimeLogComponent = document.getElementById("runtimeLogComponent");
+if (runtimeLogComponent) runtimeLogComponent.addEventListener("keydown", e => { if (e.key === "Enter") loadRuntimeLogs(); });
+const runtimeLogList = document.getElementById("runtimeLogList");
+if (runtimeLogList) runtimeLogList.addEventListener("click", e => {
+  const btn = e.target.closest(".runtime-event-delete");
+  if (btn) deleteRuntimeEvent(btn.dataset.eventId || "");
+});
 // 初始化
 loadOverview();
 </script>

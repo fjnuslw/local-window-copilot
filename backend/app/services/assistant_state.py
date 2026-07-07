@@ -22,7 +22,6 @@ VALID_STATES: set[str] = {
     "waiting",
     "concerned",
     "cheering",
-    "work_lens",
 }
 
 
@@ -35,9 +34,15 @@ class AssistantStateService:
         self.runtime_store = runtime_store
         self._state: AssistantState = "idle"
         self._reason: str | None = None
+        self._error: str | None = None
         self._updated_at = datetime.now(UTC)
         self._subscribers: set[asyncio.Queue[AssistantStateResponse]] = set()
         self._load_from_store()
+        if self._state in {"analyzing", "observing"}:
+            previous = self._state
+            self._state = "idle"
+            self._reason = f"startup-reset-from-{previous}"
+            self._error = None
         self._write_state()
 
     def get_state(self) -> AssistantStateResponse:
@@ -46,6 +51,7 @@ class AssistantStateService:
             state=self._state,
             updated_at=self._updated_at,
             reason=self._reason,
+            error=self._error,
         )
 
     async def set_state(
@@ -53,9 +59,11 @@ class AssistantStateService:
         state: AssistantState,
         *,
         reason: str | None = None,
+        error: str | None = None,
     ) -> AssistantStateResponse:
         self._state = state
         self._reason = reason
+        self._error = error if state == "error" else None
         self._updated_at = datetime.now(UTC)
         self._write_state()
         response = self.get_state()
@@ -95,6 +103,8 @@ class AssistantStateService:
         if state in VALID_STATES:
             self._state = state
             self._reason = data.get("reason")
+            raw_error = data.get("error")
+            self._error = raw_error if isinstance(raw_error, str) and raw_error else None
             updated_at = data.get("updated_at")
             if isinstance(updated_at, str):
                 try:
@@ -108,6 +118,7 @@ class AssistantStateService:
             "updated_at": self._updated_at.isoformat(),
             "source": "fastapi",
             "reason": self._reason,
+            "error": self._error,
         }
         self.runtime_store.set_json("assistant:state", payload)
         self.runtime_store.record_event("assistant:state", payload)

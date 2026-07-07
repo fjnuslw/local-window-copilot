@@ -1,5 +1,7 @@
 # Hermes-like Tool Layer Spec
 
+> 维护状态：历史 spec。三工具、独立 planner、screen.look/memory.remember 的模型可见设计已废弃；当前唯一权威主线见 ../docs/context_observation_tool_mainline_spec_zh.md。
+
 更新时间：2026-07-04
 
 状态：Codex 已开始落实第一版。

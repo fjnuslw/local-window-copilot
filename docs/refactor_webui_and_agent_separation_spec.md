@@ -1,5 +1,11 @@
 # WebUI 控制台 + 识图/对话职责分离 重构 Spec
 
+> 维护状态：历史 spec。
+>
+> 当前权威主线见 [context_observation_tool_mainline_spec_zh.md](./context_observation_tool_mainline_spec_zh.md)。
+> 本文中关于“当前窗口摘要、历史窗口摘要、记忆作为 system message 背景默认注入”的设计已废弃；
+> 后续实现必须以“观察线写结构化证据、对话线默认不注入窗口观察、模型只通过 `memory.search(query)` 按需取证”为准。
+
 > 版本：v0.1.0
 > 日期：2026-07-03
 > 范围：本次会话完成的两阶段重构（webui 控制台 + agent 职责分离）
@@ -39,7 +45,7 @@
 
 ### 2.2 页面结构
 
-webui 挂载在 `http://127.0.0.1:18080/webui/`，包含两个 tab：
+webui 挂载在 `http://127.0.0.1:18081/webui/`，包含两个 tab：
 
 | 页面 | 路径 | 功能 |
 |------|------|------|

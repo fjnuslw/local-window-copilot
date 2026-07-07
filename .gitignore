@@ -41,3 +41,13 @@ build/
 Thumbs.db
 .idea/
 .trae-html-share-packages/
+# Local agent/tooling scratch
+.codebuddy/
+.workbuddy/
+.py_runtime_probe.tmp
+.runtime_probe.tmp
+.pytest_tmp/
+.pytest_tmp2/
+test-tmp/
+backend/.pytest-os-tmp/
+backend/.pytest-tmp-parent/

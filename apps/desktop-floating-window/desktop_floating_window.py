@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import base64
+import collections
 import ctypes
+import hashlib
 import io
 import json
 import math
+import os
 import sys
 import threading
 import time
 from ctypes import wintypes
 from pathlib import Path
-from typing import Callable
-from urllib import error, request
+from typing import Any, Callable
+from urllib import error, parse, request
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageGrab
 
@@ -23,14 +26,16 @@ if not sys.platform.startswith("win"):
 APP_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = APP_DIR.parents[1]
 ASSET_DIR = PROJECT_ROOT / "assets" / "mascot" / "rive_import"
-BACKEND_BASE_URL = "http://127.0.0.1:18080"
+BACKEND_BASE_URL = os.getenv("LWC_BACKEND_BASE_URL", "http://127.0.0.1:18081")
 BACKEND_TIMEOUT_SECONDS = 0.8
 BACKEND_STREAM_TIMEOUT_SECONDS = 240
 STATE_POLL_SECONDS = 0.5
 ANALYSIS_POLL_SECONDS = 1.0
 CHAT_POLL_SECONDS = 0.75
 CHAT_HISTORY_POLL_SECONDS = 6.0
+CHAT_VISIBLE_HISTORY_LIMIT = 6
 CHAT_CONTEXT_STATUS_POLL_SECONDS = 3.0
+CHAT_TRACE_POLL_SECONDS = 1.0
 CHAT_OBSERVE_CAPTURE_DELAY_SECONDS = 0.12
 
 CANVAS_WIDTH = 520
@@ -49,6 +54,8 @@ CHAT_WINDOW_WIDTH = CHAT_CANVAS_WIDTH
 CHAT_WINDOW_HEIGHT = CHAT_CANVAS_HEIGHT
 CHAT_CONTEXT_TOP = 98
 CHAT_CONTEXT_HEIGHT = 72
+CHAT_PROCESS_HEIGHT = 36
+CHAT_PROCESS_GAP = 8
 CHAT_MESSAGE_TOP = CHAT_CONTEXT_TOP + CHAT_CONTEXT_HEIGHT + 14
 CHAT_WHEEL_STEP = 96
 
@@ -99,6 +106,8 @@ WM_MOUSEMOVE = 0x0200
 WM_MOUSEWHEEL = 0x020A
 WM_IME_STARTCOMPOSITION = 0x010D
 WM_IME_COMPOSITION = 0x010F
+# 自定义消息：工作线程通过 PostMessageW 把异步回调结果 marshal 回主线程。
+WM_APP_ASYNC_RESULT = 0x8000
 
 VK_ESCAPE = 0x1B
 VK_BACK = 0x08
@@ -116,6 +125,7 @@ SW_HIDE = 0
 SWP_NOSIZE = 0x0001
 SWP_NOMOVE = 0x0002
 SWP_NOACTIVATE = 0x0010
+SWP_SHOWWINDOW = 0x0040
 ULW_ALPHA = 0x00000002
 AC_SRC_OVER = 0x00
 AC_SRC_ALPHA = 0x01
@@ -145,9 +155,19 @@ user32.CreateWindowExW.argtypes = [
 user32.CreateWindowExW.restype = wintypes.HWND
 user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
 user32.SetTimer.argtypes = [wintypes.HWND, UINT_PTR, wintypes.UINT, ctypes.c_void_p]
+user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+user32.PostMessageW.restype = wintypes.BOOL
 user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
 user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
 user32.SetFocus.argtypes = [wintypes.HWND]
+user32.BringWindowToTop.argtypes = [wintypes.HWND]
+user32.BringWindowToTop.restype = wintypes.BOOL
+user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+user32.SetForegroundWindow.restype = wintypes.BOOL
+user32.IsWindow.argtypes = [wintypes.HWND]
+user32.IsWindow.restype = wintypes.BOOL
+user32.IsWindowVisible.argtypes = [wintypes.HWND]
+user32.IsWindowVisible.restype = wintypes.BOOL
 user32.GetKeyState.argtypes = [ctypes.c_int]
 user32.GetKeyState.restype = ctypes.c_short
 user32.SetCapture.argtypes = [wintypes.HWND]
@@ -338,10 +358,17 @@ class FloatingAssistantWindow:
         self.last_chat_poll = 0.0
         self.last_chat_history_poll = 0.0
         self.last_chat_context_status_poll = 0.0
+        self.last_chat_trace_poll = 0.0
         self.last_analysis_signature: str | None = None
         self.latest_analysis: dict[str, object] | None = None
         self.conversation: dict[str, object] | None = None
         self.chat_context_status: dict[str, object] | None = None
+        self.chat_context_preview: dict[str, object] | None = None
+        self.chat_context_preview_request_id: str | None = None
+        self.chat_trace_items: list[dict[str, object]] = []
+        self.chat_trace_session_id: str | None = None
+        self.chat_process_expanded = False
+        self.chat_stream_active = False
         self.chat_history: list[dict[str, object]] = []
         self.chat_question = ""
         self.chat_image_base64: str | None = None
@@ -355,6 +382,7 @@ class FloatingAssistantWindow:
         self.chat_input_region: tuple[int, int, int, int] | None = None
         self.chat_send_region: tuple[int, int, int, int] | None = None
         self.chat_resume_region: tuple[int, int, int, int] | None = None
+        self.chat_process_region: tuple[int, int, int, int] | None = None
         self.chat_close_region = (CHAT_CANVAS_WIDTH - 44, 18, CHAT_CANVAS_WIDTH - 18, 44)
         self.close_region = (CANVAS_WIDTH - 40, 18, CANVAS_WIDTH - 16, 42)
         self.drag_start: tuple[int, int, int, int] | None = None
@@ -364,7 +392,17 @@ class FloatingAssistantWindow:
         self.drag_moved = False
         self._request_lock = threading.Lock()
         self._inflight_requests: set[str] = set()
+        # 异步回调 marshal：工作线程把无参 callable 投递到这里，再 PostMessage
+        # 通知主线程在 WM_APP_ASYNC_RESULT 分支里安全执行，避免跨线程改 UI 状态。
+        self._callback_lock = threading.Lock()
+        self._pending_callbacks: collections.deque[Callable[[], None]] = collections.deque()
+        # _wrap_text 缓存：key=(text digest, font, max_width, max_lines)，value=lines。
+        # 避免长消息每帧重复逐字符 textbbox 测量。限制缓存条目数。
+        self._wrap_cache: dict[tuple[str, str, int, int], list[str]] = {}
+        self._wrap_cache_max = 128
         self._last_conversation_status: str | None = None
+        self._main_dirty = True
+        self._main_render_skip = 0
         self._chat_dirty = False
         self._chat_render_skip = 0
         self._chat_auto_scroll = True
@@ -372,7 +410,6 @@ class FloatingAssistantWindow:
         self.chat_max_scroll = 0
         self.chat_scrollbar_region: tuple[int, int, int, int] | None = None
         self.chat_scroll_drag: tuple[int, int] | None = None
-
         self._register_class()
         self._create_window()
 
@@ -406,16 +443,13 @@ class FloatingAssistantWindow:
         )
         if not hwnd:
             raise ctypes.WinError()
-
         self.hwnd = hwnd
         self._exclude_from_screen_capture(hwnd)
         user32.ShowWindow(hwnd, SW_SHOW)
-        user32.SetTimer(hwnd, 1, 33, None)
+        user32.SetTimer(hwnd, 1, 50, None)
         self.render()
 
-    def _create_chat_window(self) -> None:
-        if self.chat_hwnd is not None:
-            return
+    def _chat_window_position(self) -> tuple[int, int]:
         screen_w = user32.GetSystemMetrics(0)
         screen_h = user32.GetSystemMetrics(1)
         x = max(24, screen_w - CHAT_WINDOW_WIDTH - WINDOW_WIDTH - 62)
@@ -423,8 +457,16 @@ class FloatingAssistantWindow:
         if self.hwnd is not None:
             rect = wintypes.RECT()
             user32.GetWindowRect(self.hwnd, ctypes.byref(rect))
-            x = max(24, rect.left - CHAT_WINDOW_WIDTH - 18)
-            y = max(24, min(rect.top + 24, screen_h - CHAT_WINDOW_HEIGHT - 24))
+            x = rect.left - CHAT_WINDOW_WIDTH - 18
+            y = min(rect.top + 24, screen_h - CHAT_WINDOW_HEIGHT - 24)
+        x = max(24, min(x, screen_w - CHAT_WINDOW_WIDTH - 24))
+        y = max(24, min(y, screen_h - CHAT_WINDOW_HEIGHT - 24))
+        return x, y
+
+    def _create_chat_window(self) -> None:
+        if self.chat_hwnd is not None:
+            return
+        x, y = self._chat_window_position()
         ex_style = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW
         hwnd = user32.CreateWindowExW(
             ex_style,
@@ -444,37 +486,45 @@ class FloatingAssistantWindow:
             raise ctypes.WinError()
         self.chat_hwnd = hwnd
         self._exclude_from_screen_capture(hwnd)
-        self.render_chat()
 
     @staticmethod
     def _exclude_from_screen_capture(hwnd: int) -> None:
         user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
 
     def _open_chat_window(self) -> None:
-        self._pause_auto_watch()
-        self._create_chat_window()
-        if self.chat_hwnd is None:
-            return
-        self.chat_visible = True
-        self.chat_input_focused = True
-        self._chat_auto_scroll = True
-        self.last_chat_history_poll = 0.0
-        self.last_chat_context_status_poll = 0.0
-        self._poll_chat_history(force=True)
-        self._poll_chat_context_status(force=True)
-        user32.ShowWindow(self.chat_hwnd, SW_SHOW)
-        user32.SetWindowPos(
-            self.chat_hwnd,
-            HWND_TOPMOST,
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-        )
-        user32.SetFocus(self.chat_hwnd)
-        self.render_chat()
-        self._update_chat_ime_position()
+        try:
+            self._create_chat_window()
+            if self.chat_hwnd is None:
+                return
+            self.chat_visible = True
+            self.chat_input_focused = True
+            self._chat_auto_scroll = True
+            x, y = self._chat_window_position()
+            user32.ShowWindow(self.chat_hwnd, SW_SHOW)
+            user32.SetWindowPos(
+                self.chat_hwnd,
+                HWND_TOPMOST,
+                x,
+                y,
+                CHAT_WINDOW_WIDTH,
+                CHAT_WINDOW_HEIGHT,
+                SWP_SHOWWINDOW,
+            )
+            user32.BringWindowToTop(self.chat_hwnd)
+            user32.SetForegroundWindow(self.chat_hwnd)
+            user32.SetFocus(self.chat_hwnd)
+            self.render_chat()
+            self._update_chat_ime_position()
+            self.last_chat_history_poll = 0.0
+            self.last_chat_context_status_poll = 0.0
+            self._poll_chat_history(force=True)
+            self._poll_chat_context_status(force=True)
+        except Exception as exc:
+            print(f"[floating-window] failed to open chat window: {exc}", flush=True)
+            self.chat_visible = False
+            self.chat_input_focused = False
+            self.set_state("error")
+            self.render()
 
     def _hide_chat_window(self) -> None:
         self.chat_visible = False
@@ -493,6 +543,7 @@ class FloatingAssistantWindow:
         if state not in STATES:
             return
         self.state = state
+        self._main_dirty = True
         if publish:
             self._request_json_async(
                 f"state:{state}",
@@ -537,6 +588,7 @@ class FloatingAssistantWindow:
             return
         self.last_analysis_signature = signature
         self.latest_analysis = data
+        self._main_dirty = True
 
     def _poll_conversation(self) -> None:
         now = time.monotonic()
@@ -555,6 +607,7 @@ class FloatingAssistantWindow:
         status = None
         if isinstance(self.conversation, dict):
             status = str(self.conversation.get("status") or "")
+            self._set_chat_trace_session(self.conversation.get("session_id"))
         if status and status != self._last_conversation_status:
             if status == "streaming":
                 self._chat_auto_scroll = True
@@ -603,6 +656,101 @@ class FloatingAssistantWindow:
         if self.chat_visible:
             self._chat_dirty = True
 
+    def _request_chat_context_preview(self, question: str) -> None:
+        request_id = str(time.monotonic_ns())
+        self.chat_context_preview_request_id = request_id
+        self._request_json_async(
+            f"chat-context-preview:{request_id}",
+            "POST",
+            "/api/assistant/context-preview",
+            {"question": question or "当前对话上下文状态"},
+            on_success=lambda data, current_id=request_id: self._apply_chat_context_preview(data, current_id),
+        )
+
+    def _apply_chat_context_preview(self, data: object, request_id: str) -> None:
+        if request_id != self.chat_context_preview_request_id:
+            return
+        self.chat_context_preview = data if isinstance(data, dict) else None
+        if self.chat_visible:
+            self._chat_dirty = True
+
+    def _current_chat_session_id(self) -> str | None:
+        if isinstance(self.conversation, dict):
+            session_id = str(self.conversation.get("session_id") or "").strip()
+            if session_id:
+                return session_id
+        return self.chat_trace_session_id
+
+    def _set_chat_trace_session(self, session_id: object) -> None:
+        sid = str(session_id or "").strip()
+        if not sid:
+            return
+        if sid == self.chat_trace_session_id:
+            return
+        self.chat_trace_session_id = sid
+        self.chat_trace_items = []
+        self.last_chat_trace_poll = 0.0
+        self._poll_chat_traces(force=True)
+
+    def _poll_chat_traces(self, *, force: bool = False) -> None:
+        sid = self._current_chat_session_id()
+        if not sid:
+            return
+        now = time.monotonic()
+        if not force and now - self.last_chat_trace_poll < CHAT_TRACE_POLL_SECONDS:
+            return
+        self.last_chat_trace_poll = now
+        query = parse.urlencode({"limit": 80, "session_id": sid})
+        self._request_json_async(
+            f"chat-traces:{sid}",
+            "GET",
+            f"/api/webui/interaction-traces?{query}",
+            on_success=lambda data, session_id=sid: self._apply_chat_traces(data, session_id),
+        )
+
+    def _apply_chat_traces(self, data: object, session_id: str) -> None:
+        if session_id != self.chat_trace_session_id:
+            return
+        if not isinstance(data, dict):
+            return
+        items = data.get("items")
+        self.chat_trace_items = items if isinstance(items, list) else []
+        if self.chat_visible:
+            self._chat_dirty = True
+
+    def _clear_chat_debug_state(self) -> None:
+        self.chat_context_preview = None
+        self.chat_context_preview_request_id = None
+        self.chat_trace_items = []
+        self.chat_trace_session_id = None
+        self.last_chat_trace_poll = 0.0
+
+    def _enqueue_callback(self, callback: Callable[[], None]) -> None:
+        """工作线程调用：把无参 callable 入队，PostMessage 通知主线程执行。"""
+        with self._callback_lock:
+            self._pending_callbacks.append(callback)
+        if self.hwnd is not None and user32.IsWindow(self.hwnd):
+            user32.PostMessageW(self.hwnd, WM_APP_ASYNC_RESULT, 0, 0)
+
+    def _drain_callbacks(self) -> None:
+        """主线程调用：分批执行待处理的异步回调。"""
+        processed = 0
+        max_callbacks = 100
+        while processed < max_callbacks:
+            with self._callback_lock:
+                if not self._pending_callbacks:
+                    return
+                callback = self._pending_callbacks.popleft()
+            try:
+                callback()
+            except Exception as exc:
+                print(f"[floating-window] async callback failed: {exc}", flush=True)
+            processed += 1
+        with self._callback_lock:
+            has_more = bool(self._pending_callbacks)
+        if has_more and self.hwnd is not None and user32.IsWindow(self.hwnd):
+            user32.PostMessageW(self.hwnd, WM_APP_ASYNC_RESULT, 0, 0)
+
     def _request_json_async(
         self,
         key: str,
@@ -634,7 +782,7 @@ class FloatingAssistantWindow:
         try:
             data = self._request_json(method, path, payload)
             if data is not None and on_success is not None:
-                on_success(data)
+                self._enqueue_callback(lambda d=data: on_success(d))
         finally:
             with self._request_lock:
                 self._inflight_requests.discard(key)
@@ -716,7 +864,8 @@ class FloatingAssistantWindow:
                 data: object = json.loads(data_text)
             except json.JSONDecodeError:
                 data = data_text
-            on_event(event_name, data)
+            # marshal 回主线程执行，避免工作线程直接修改 UI 共享状态。
+            self._enqueue_callback(lambda ev=event_name, d=data: on_event(ev, d))
             event_name = "message"
             data_lines = []
 
@@ -734,7 +883,7 @@ class FloatingAssistantWindow:
                 dispatch()
         except (OSError, error.URLError, TimeoutError) as exc:
             if on_error is not None:
-                on_error(str(exc))
+                self._enqueue_callback(lambda e=str(exc): on_error(e))
         finally:
             with self._request_lock:
                 self._inflight_requests.discard(key)
@@ -743,6 +892,7 @@ class FloatingAssistantWindow:
         if event == "session" and isinstance(data, dict):
             self.conversation = data
             self._last_conversation_status = str(data.get("status") or "streaming")
+            self._set_chat_trace_session(data.get("session_id"))
             self._chat_auto_scroll = True
             self._chat_dirty = True
             return
@@ -765,6 +915,7 @@ class FloatingAssistantWindow:
             self.chat_stream_active = False
             self._apply_conversation(data)
             self._poll_chat_history(force=True)
+            self._poll_chat_traces(force=True)
             self.set_state("idle")
             return
         if event == "error":
@@ -783,6 +934,7 @@ class FloatingAssistantWindow:
             self._last_conversation_status = "error"
             self._chat_dirty = True
             self._poll_chat_history(force=True)
+            self._poll_chat_traces(force=True)
             self.set_state("idle")
 
     def _apply_question_stream_error(self, message: str) -> None:
@@ -806,6 +958,9 @@ class FloatingAssistantWindow:
         if msg == WM_DESTROY:
             user32.PostQuitMessage(0)
             return 0
+        if msg == WM_APP_ASYNC_RESULT:
+            self._drain_callbacks()
+            return 0
         if msg == WM_TIMER:
             self._poll_backend_state()
             self._poll_latest_analysis()
@@ -813,14 +968,33 @@ class FloatingAssistantWindow:
             if self.chat_visible:
                 self._poll_chat_history()
                 self._poll_chat_context_status()
-            self.render()
+                self._poll_chat_traces()
+            # 主窗口节流：idle 状态降频绘制，非 idle 保持全帧率；
+            # 状态/数据变化时 _main_dirty 触发立即重绘。
+            needs_main_render = self._main_dirty
+            if not needs_main_render:
+                if self.state == "idle":
+                    if self._main_render_skip <= 0:
+                        needs_main_render = True
+                    else:
+                        self._main_render_skip -= 1
+                else:
+                    needs_main_render = True
+            if needs_main_render:
+                self.render()
+                self._main_dirty = False
+                self._main_render_skip = 2 if self.state == "idle" else 0
             if self.chat_visible:
-                if self._chat_dirty or self._chat_render_skip <= 0:
+                needs_chat_render = self._chat_dirty
+                if not needs_chat_render and self.chat_input_focused:
+                    if self._chat_render_skip <= 0:
+                        needs_chat_render = True
+                    else:
+                        self._chat_render_skip -= 1
+                if needs_chat_render:
                     self.render_chat()
                     self._chat_dirty = False
-                    self._chat_render_skip = 3
-                else:
-                    self._chat_render_skip -= 1
+                    self._chat_render_skip = 4 if self.chat_stream_active else 10
             self.frame += 1
             return 0
         if msg == WM_KEYDOWN and wparam == VK_ESCAPE:
@@ -1009,6 +1183,10 @@ class FloatingAssistantWindow:
             rx1, ry1, rx2, ry2 = self.chat_resume_region
             if rx1 <= x <= rx2 and ry1 <= y <= ry2:
                 return "resume"
+        if self.chat_process_region is not None:
+            px1, py1, px2, py2 = self.chat_process_region
+            if px1 <= x <= px2 and py1 <= y <= py2:
+                return "process"
         if self.chat_scrollbar_region is not None:
             sb_x1, sb_y1, sb_x2, sb_y2 = self.chat_scrollbar_region
             if sb_x1 <= x <= sb_x2 and sb_y1 <= y <= sb_y2:
@@ -1047,10 +1225,7 @@ class FloatingAssistantWindow:
     def _append_chat_text(self, text: str) -> None:
         if not text:
             return
-        remaining = 240 - len(self.chat_question)
-        if remaining <= 0:
-            return
-        self.chat_question += text[:remaining]
+        self.chat_question += text
         self._render_chat_soon(immediate=True)
 
     def _paste_chat_image(self) -> bool:
@@ -1146,6 +1321,11 @@ class FloatingAssistantWindow:
         if hit == "close":
             self._hide_chat_window()
             return
+        if hit == "process":
+            self.chat_process_expanded = not self.chat_process_expanded
+            self._chat_auto_scroll = False
+            self._render_chat_soon(immediate=True)
+            return
         if hit == "input":
             self.chat_input_focused = True
             self._update_chat_ime_position()
@@ -1235,6 +1415,9 @@ class FloatingAssistantWindow:
         if image_payload is not None:
             self.conversation["image_name"] = image_payload.get("image_name")
         self._last_conversation_status = "streaming"
+        self._clear_chat_debug_state()
+        self.chat_process_expanded = False
+        self._request_chat_context_preview(question)
         self.set_state("analyzing")
         payload: dict[str, object] = {"question": question}
         if image_payload is not None:
@@ -1255,6 +1438,7 @@ class FloatingAssistantWindow:
         self.chat_stream_active = False
         self.conversation = None
         self._last_conversation_status = None
+        self._clear_chat_debug_state()
         self.set_state("idle")
         self.render()
         if self.chat_visible:
@@ -1274,6 +1458,7 @@ class FloatingAssistantWindow:
         self.chat_stream_active = False
         self.conversation = None
         self._last_conversation_status = None
+        self._clear_chat_debug_state()
         self.set_state("observing")
         timer = threading.Timer(
             CHAT_OBSERVE_CAPTURE_DELAY_SECONDS,
@@ -1336,7 +1521,8 @@ class FloatingAssistantWindow:
             width=2,
         )
 
-        msg_top = CHAT_MESSAGE_TOP
+        process_top = CHAT_CONTEXT_TOP + CHAT_CONTEXT_HEIGHT + CHAT_PROCESS_GAP
+        msg_top = process_top + CHAT_PROCESS_HEIGHT + 10
         msg_bottom = CHAT_CANVAS_HEIGHT - 92
         visible_height = msg_bottom - msg_top
 
@@ -1377,6 +1563,7 @@ class FloatingAssistantWindow:
         draw.text((66, 35), "和我聊聊", fill=(18, 52, 72, 255), font=self.panel_title_font)
         draw.text((66, 63), "我在这里，想聊就说", fill=(73, 106, 126, 255), font=self.panel_small_font)
         self._draw_chat_context(draw, CHAT_CONTEXT_TOP)
+        self._draw_chat_process_toggle(draw, process_top)
         self._draw_chat_close_button(draw)
 
         if messages and self.chat_max_scroll > 0:
@@ -1396,7 +1583,7 @@ class FloatingAssistantWindow:
         draw.line((x2 - 8, y1 + 8, x1 + 8, y2 - 8), fill=(72, 102, 120, 255), width=2)
 
     def _draw_chat_context(self, draw: ImageDraw.ImageDraw, y: int) -> int:
-        """上下文状态卡：对齐 WebUI 的 context usage 口径，不展示窗口观察。"""
+        """上下文状态卡：对齐 WebUI 的 context usage 口径。"""
         draw.rounded_rectangle(
             (32, y, CHAT_CANVAS_WIDTH - 40, y + CHAT_CONTEXT_HEIGHT),
             radius=16,
@@ -1412,7 +1599,7 @@ class FloatingAssistantWindow:
         model = str(status.get("model_name") or "模型状态加载中")
         dialogue_turns = int(status.get("dialogue_turns") or 0)
         memory_count = int(status.get("memory_count") or 0)
-        recent_count = int(status.get("recent_summaries_count") or 0)
+        recent_count = self._int_value(status.get("available_recent_observations_count") or status.get("recent_observations_count") or status.get("recent_summaries_count"))
 
         title = f"上下文 {usage_percent:.0f}% 已用（剩余 {remaining_percent:.0f}%）"
         draw.text((48, y + 8), title, fill=(56, 88, 108, 255), font=self.panel_small_font)
@@ -1445,20 +1632,182 @@ class FloatingAssistantWindow:
         )
         draw.text((48, y + 49), model_text, fill=(28, 66, 88, 255), font=self.panel_small_font)
 
-        stats = f"历史 {dialogue_turns} · 记忆 {memory_count} · 观察 {recent_count}"
+        stats = f"历史 {dialogue_turns} · 记忆 {memory_count} · 可查观察 {recent_count}"
         clipped_stats = self._single_line_text(draw, stats, self.panel_small_font, 260)
         draw.text((CHAT_CANVAS_WIDTH - 318, y + 8), clipped_stats, fill=(73, 106, 126, 255), font=self.panel_small_font)
         return y + CHAT_CONTEXT_HEIGHT
 
+    def _draw_chat_process_toggle(self, draw: ImageDraw.ImageDraw, y: int) -> int:
+        x1, x2 = 32, CHAT_CANVAS_WIDTH - 40
+        y2 = y + CHAT_PROCESS_HEIGHT
+        self.chat_process_region = (x1, y, x2, y2)
+        fill = (241, 250, 253, 238) if self.chat_process_expanded else (255, 255, 255, 228)
+        outline = (147, 215, 232, 225) if self.chat_process_expanded else (213, 235, 242, 210)
+        draw.rounded_rectangle((x1, y, x2, y2), radius=14, fill=fill, outline=outline, width=1)
+
+        usage = self._chat_context_usage()
+        mode = self._mode_label(usage.get("answer_mode") or "tool_auto")
+        trace_count = len(self._trace_records())
+        current_chars = self._int_value(usage.get("available_current_observation_chars") or usage.get("current_observation_chars") or usage.get("current_summary_chars"))
+        memory_count = self._int_value(usage.get("memory_count"))
+        status = "生成中" if self.chat_stream_active else ("已记录" if trace_count else "等待")
+        arrow = "v" if self.chat_process_expanded else ">"
+        text = f"{arrow} 过程 · {mode} · {status} · trace {trace_count} · 可查当前 {current_chars} 字 · 记忆 {memory_count}"
+        clipped = self._single_line_text(draw, text, self.panel_small_font, x2 - x1 - 140)
+        draw.text((x1 + 16, y + 8), clipped, fill=(30, 76, 98, 255), font=self.panel_small_font)
+
+        hint = "点击收起" if self.chat_process_expanded else "点击展开"
+        hint = self._single_line_text(draw, hint, self.panel_small_font, 112)
+        hint_bbox = draw.textbbox((0, 0), hint, font=self.panel_small_font)
+        draw.text((x2 - 18 - (hint_bbox[2] - hint_bbox[0]), y + 8), hint, fill=(73, 106, 126, 255), font=self.panel_small_font)
+        return y2
+
+    def _chat_context_usage(self) -> dict[str, Any]:
+        status = self.chat_context_status if isinstance(self.chat_context_status, dict) else {}
+        preview = self.chat_context_preview if isinstance(self.chat_context_preview, dict) else {}
+        usage = preview.get("usage") if isinstance(preview.get("usage"), dict) else {}
+        merged: dict[str, Any] = dict(status)
+        merged.update(usage)
+        return merged
+
+    def _chat_process_detail_text(self) -> str:
+        usage = self._chat_context_usage()
+        preview = self.chat_context_preview if isinstance(self.chat_context_preview, dict) else {}
+        lines: list[str] = ["过程详情", "这里展示的是上下文、输入消息和调用轨迹；内部推理文本不作为回答正文展示。"]
+
+        mode = self._mode_label(usage.get("answer_mode") or "tool_auto")
+        current_window = usage.get("current_window") or "无可用当前窗口观察"
+        selected_image = usage.get("selected_image") or "无"
+        selected_reason = usage.get("selected_reason") or "tool_available"
+        lines.append(f"回答模式: {mode}")
+        lines.append(f"当前窗口: {current_window}")
+        lines.append(f"使用图片: {selected_image} ({selected_reason})")
+        lines.append(
+            "注入内容: "
+            f"profile {self._int_value(usage.get('profile_chars'))} 字; "
+            f"窗口观察注入 {self._int_value(usage.get('current_observation_chars') or usage.get('current_summary_chars'))} 字; "
+            f"最近观察注入 {self._int_value(usage.get('recent_observations_count') or usage.get('recent_summaries_count'))} 条/"
+            f"{self._int_value(usage.get('recent_observations_chars') or usage.get('recent_summaries_chars'))} 字; "
+            f"记忆 {self._int_value(usage.get('memory_count'))} 条/{self._int_value(usage.get('memory_chars'))} 字; "
+            f"对话历史 {self._int_value(usage.get('dialogue_turns'))} 轮/{self._int_value(usage.get('dialogue_chars'))} 字; "
+            f"工具可查 当前 {self._int_value(usage.get('available_current_observation_chars'))} 字/最近 {self._int_value(usage.get('available_recent_observations_count'))} 条"
+        )
+        tokens = self._int_value(usage.get("estimated_tokens"))
+        ctx_size = self._int_value(usage.get("ctx_size"))
+        usage_percent = usage.get("usage_percent")
+        if ctx_size:
+            lines.append(f"预算估算: {tokens} / {ctx_size} tokens ({usage_percent or 0}%)")
+
+        if preview:
+            observation = str(preview.get("latest_observation") or preview.get("latest_summary") or "").strip()
+            if observation:
+                lines.append("")
+                lines.append("当前窗口观察内容:")
+                lines.append(observation)
+        else:
+            lines.append("")
+            lines.append("context-preview 仍在加载；如果一直为空，说明 backend 没有返回上下文预览。")
+
+        records = self._trace_records()
+        if records:
+            lines.append("")
+            lines.append("调用/阶段:")
+            for record in records:
+                stage = str(record.get("stage") or "trace")
+                payload = record.get("payload")
+                lines.append(f"- {stage}: {self._trace_payload_summary(stage, payload)}")
+        else:
+            lines.append("")
+            lines.append("调用/阶段: 暂无 trace；本轮 session id 返回后会自动刷新。")
+        return "\n".join(lines)
+
+    def _trace_records(self) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for item in self.chat_trace_items:
+            if not isinstance(item, dict):
+                continue
+            payload = item.get("payload")
+            if isinstance(payload, dict):
+                records.append(payload)
+        return sorted(records, key=lambda record: str(record.get("created_at") or ""))
+
+    def _trace_payload_summary(self, stage: str, payload: object) -> str:
+        if not isinstance(payload, dict):
+            return str(payload or "无 payload")
+        messages = payload.get("messages")
+        if isinstance(messages, list):
+            return f"模型输入 messages {len(messages)} 条 / 约 {self._message_payload_chars(messages)} 字"
+        if stage == "context_built":
+            return (
+                f"模式 {payload.get('answer_mode')}; "
+                f"当前上下文约 {payload.get('context_chars')} 字; "
+                f"最近观察 {payload.get('history_summaries_count')} 条; "
+                f"记忆 {payload.get('memory_count')} 条; "
+                f"对话历史 {payload.get('chat_history_count')} 轮; "
+                f"选图 {payload.get('selected_image') or '无'} ({payload.get('selected_reason')})"
+            )
+        if stage == "session_started":
+            latest_window = payload.get("latest_window")
+            window_text = "无最新窗口"
+            if isinstance(latest_window, dict):
+                window_text = f"{latest_window.get('app_name') or ''} · {latest_window.get('window_title') or ''} · {latest_window.get('window_type') or ''}"
+            return f"问题已接收; 最新窗口 {window_text}; 用户图片 {payload.get('user_image') or '无'}"
+        if stage == "session_finished":
+            return f"状态 {payload.get('status')}; 回答约 {payload.get('answer_chars')} 字; 错误 {payload.get('error') or '无'}"
+        parts: list[str] = []
+        for key, value in payload.items():
+            if isinstance(value, list):
+                parts.append(f"{key} {len(value)} 项")
+            elif isinstance(value, dict):
+                parts.append(f"{key} {len(value)} 项")
+            else:
+                parts.append(f"{key}={value}")
+        return "; ".join(parts) if parts else "无 payload"
+
+    @staticmethod
+    def _message_payload_chars(messages: list[object]) -> int:
+        total = 0
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if isinstance(content, str):
+                total += len(content)
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and isinstance(item.get("text"), str):
+                        total += len(item["text"])
+        return total
+
+    @staticmethod
+    def _int_value(value: object) -> int:
+        try:
+            return int(float(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _mode_label(mode: object) -> str:
+        labels = {"context_direct": "直接上下文", "tool_auto": "工具自取"}
+        raw = str(mode or "tool_auto")
+        return labels.get(raw, raw)
+
     def _chat_messages(self) -> list[tuple[str, str, str]]:
         messages: list[tuple[str, str, str]] = []
         current_id = self.conversation.get("session_id") if isinstance(self.conversation, dict) else None
-        history = [
+        history_items = [
             item
-            for item in reversed(self.chat_history[:6])
+            for item in self.chat_history
             if isinstance(item, dict) and item.get("session_id") != current_id
         ]
-        for item in history:
+        hidden_count = max(0, len(history_items) - CHAT_VISIBLE_HISTORY_LIMIT)
+        if hidden_count > 0:
+            messages.append((
+                "process",
+                f"已保留 {len(history_items)} 轮历史；浮窗只渲染最近 {CHAT_VISIBLE_HISTORY_LIMIT} 轮以保持流畅，模型上下文仍按后端设置注入。",
+                "done",
+            ))
+        for item in reversed(history_items[:CHAT_VISIBLE_HISTORY_LIMIT]):
             question = str(item.get("question") or "").strip()
             answer = str(item.get("answer") or "").strip()
             status = str(item.get("status") or "done")
@@ -1472,16 +1821,21 @@ class FloatingAssistantWindow:
             status = str(self.conversation.get("status") or "streaming")
             if question:
                 messages.append(("user", question, status))
+            if self.chat_process_expanded:
+                messages.append(("process", self._chat_process_detail_text(), "done"))
             if answer:
                 messages.append(("assistant", answer, status))
             elif status == "streaming":
                 messages.append(("assistant", "正在回答...", status))
+        elif self.chat_process_expanded:
+            messages.append(("process", self._chat_process_detail_text(), "done"))
         return messages
 
     def _draw_chat_bubble(self, draw: ImageDraw.ImageDraw, speaker: str, text: str, y: int, *, status: str) -> int:
         is_user = speaker == "user"
-        max_width = 500 if is_user else 590
-        font = self.panel_small_font if is_user else self.panel_body_font
+        is_process = speaker == "process"
+        max_width = 650 if is_process else (500 if is_user else 590)
+        font = self.panel_small_font if (is_user or is_process) else self.panel_body_font
         # 不截断消息内容：max_lines 设为很大，让完整文本展示，由消息区滚动
         lines = self._wrap_text(draw, text, font, max_width - 28, 9999)
         bbox = draw.textbbox((0, 0), "国", font=font)
@@ -1490,15 +1844,24 @@ class FloatingAssistantWindow:
         width = min(max_width, max((draw.textbbox((0, 0), line, font=font)[2] for line in lines), default=80) + 28)
         x1 = CHAT_CANVAS_WIDTH - 44 - width if is_user else 38
         x2 = x1 + width
-        fill = (217, 249, 255, 242) if is_user else (255, 255, 255, 240)
-        outline = (91, 210, 235, 190) if is_user else (210, 231, 238, 220)
+        if is_user:
+            fill = (217, 249, 255, 242)
+            outline = (91, 210, 235, 190)
+            text_fill = (19, 70, 91, 255)
+        elif is_process:
+            fill = (241, 250, 253, 242)
+            outline = (176, 218, 231, 220)
+            text_fill = (38, 78, 99, 255)
+        else:
+            fill = (255, 255, 255, 240)
+            outline = (210, 231, 238, 220)
+            text_fill = (18, 52, 72, 255)
         draw.rounded_rectangle((x1, y, x2, y + height), radius=15, fill=fill, outline=outline, width=1)
-        text_fill = (19, 70, 91, 255) if is_user else (18, 52, 72, 255)
         line_y = y + 10
         for line in lines:
             draw.text((x1 + 14, line_y), line, fill=text_fill, font=font)
             line_y += line_height
-        if not is_user and status == "streaming":
+        if not is_user and not is_process and status == "streaming":
             dots = "." * ((self.frame // 12) % 4)
             draw.text((x1 + 14, y + height - 19), f"生成中{dots}", fill=(92, 125, 143, 255), font=self.panel_small_font)
         return y + height
@@ -1511,8 +1874,9 @@ class FloatingAssistantWindow:
         status: str,
     ) -> int:
         is_user = speaker == "user"
-        max_width = 500 if is_user else 590
-        font = self.panel_small_font if is_user else self.panel_body_font
+        is_process = speaker == "process"
+        max_width = 650 if is_process else (500 if is_user else 590)
+        font = self.panel_small_font if (is_user or is_process) else self.panel_body_font
         # 不截断：与 _draw_chat_bubble 保持一致的 max_lines
         lines = self._wrap_text(draw, text, font, max_width - 28, 9999)
         bbox = draw.textbbox((0, 0), "国", font=font)
@@ -1843,35 +2207,82 @@ class FloatingAssistantWindow:
             y += line_height
         return y
 
-    @staticmethod
     def _wrap_text(
+        self,
         draw: ImageDraw.ImageDraw,
         text: str,
         font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
         max_width: int,
         max_lines: int,
     ) -> list[str]:
-        normalized = " ".join(str(text).split())
-        if not normalized:
+        raw_text = str(text).replace("\r\n", "\n").replace("\r", "\n")
+        if not raw_text.strip():
             return []
+        digest = hashlib.sha1(raw_text.encode("utf-8", errors="ignore")).hexdigest()
+        cache_key = (
+            f"{len(raw_text)}:{digest}",
+            self._font_cache_key(font),
+            int(max_width),
+            int(max_lines),
+        )
+        cached = self._wrap_cache.get(cache_key)
+        if cached is not None:
+            return list(cached)
+        lines = self._wrap_text_uncached(draw, raw_text, font, max_width, max_lines)
+        if len(self._wrap_cache) >= self._wrap_cache_max:
+            self._wrap_cache.pop(next(iter(self._wrap_cache)), None)
+        self._wrap_cache[cache_key] = list(lines)
+        return lines
 
+    @staticmethod
+    def _wrap_text_uncached(
+        draw: ImageDraw.ImageDraw,
+        raw_text: str,
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+        max_width: int,
+        max_lines: int,
+    ) -> list[str]:
         lines: list[str] = []
-        current = ""
-        for char in normalized:
-            candidate = current + char
-            if draw.textbbox((0, 0), candidate, font=font)[2] <= max_width:
-                current = candidate
+        paragraphs = raw_text.split("\n")
+        for paragraph_index, paragraph in enumerate(paragraphs):
+            normalized = " ".join(paragraph.split())
+            if not normalized:
+                if lines and paragraph_index < len(paragraphs) - 1 and len(lines) < max_lines:
+                    lines.append("")
                 continue
-            if current:
+            current = ""
+            for char in normalized:
+                candidate = current + char
+                if draw.textbbox((0, 0), candidate, font=font)[2] <= max_width:
+                    current = candidate
+                    continue
+                if current:
+                    lines.append(current)
+                current = char
+                if len(lines) >= max_lines:
+                    break
+            if current and len(lines) < max_lines:
                 lines.append(current)
-            current = char
             if len(lines) >= max_lines:
                 break
-        if current and len(lines) < max_lines:
-            lines.append(current)
-        if len(lines) == max_lines and len("".join(lines)) < len(normalized):
-            lines[-1] = lines[-1].rstrip("，。！？；,.!?; ") + "..."
+        if len(lines) == max_lines:
+            consumed = "".join(line for line in lines)
+            compact = "".join(" ".join(paragraph.split()) for paragraph in paragraphs)
+            if len(consumed) < len(compact):
+                lines[-1] = lines[-1].rstrip("，。！？；,.!?; ") + "..."
         return lines
+
+    @staticmethod
+    def _font_cache_key(font: ImageFont.FreeTypeFont | ImageFont.ImageFont) -> str:
+        return ":".join(
+            str(part)
+            for part in (
+                type(font).__name__,
+                getattr(font, "path", ""),
+                getattr(font, "size", 0),
+                id(font),
+            )
+        )
 
     @staticmethod
     def _single_line_text(

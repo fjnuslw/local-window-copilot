@@ -81,6 +81,78 @@ class RuntimeStore:
         except sqlite3.Error as exc:
             self._raise_failure(exc)
 
+    def delete_many_json(self, names: list[str]) -> int:
+        clean_names = [name for name in names if isinstance(name, str) and name.strip()]
+        if not clean_names:
+            return 0
+        placeholders = ",".join("?" for _ in clean_names)
+        try:
+            with self._lock, self._connect() as connection:
+                cursor = connection.execute(
+                    f"delete from runtime_json where name in ({placeholders})",
+                    tuple(clean_names),
+                )
+                deleted = int(cursor.rowcount if cursor.rowcount is not None else 0)
+            self.last_error = None
+            return deleted
+        except sqlite3.Error as exc:
+            self._raise_failure(exc)
+
+    def list_json(
+        self,
+        *,
+        limit: int = 200,
+        prefix: str | None = None,
+    ) -> list[dict[str, Any]]:
+        effective_limit = max(1, min(limit, 1000))
+        try:
+            with self._lock, self._connect() as connection:
+                if prefix:
+                    rows = connection.execute(
+                        """
+                        select name, payload, expires_at, updated_at
+                        from runtime_json
+                        where name like ?
+                        order by updated_at desc
+                        limit ?
+                        """,
+                        (f"{prefix}%", effective_limit),
+                    ).fetchall()
+                else:
+                    rows = connection.execute(
+                        """
+                        select name, payload, expires_at, updated_at
+                        from runtime_json
+                        order by updated_at desc
+                        limit ?
+                        """,
+                        (effective_limit,),
+                    ).fetchall()
+            self.last_error = None
+        except sqlite3.Error as exc:
+            self._raise_failure(exc)
+
+        items: list[dict[str, Any]] = []
+        now = time.time()
+        for name, payload_text, expires_at, updated_at in rows:
+            try:
+                payload = json.loads(payload_text)
+            except json.JSONDecodeError:
+                payload = payload_text
+            expired = expires_at is not None and float(expires_at) <= now
+            items.append(
+                {
+                    "name": name,
+                    "payload": payload,
+                    "payload_text": payload_text,
+                    "payload_chars": len(payload_text or ""),
+                    "expires_at": expires_at,
+                    "expired": expired,
+                    "updated_at": updated_at,
+                }
+            )
+        return items
+
     def record_event(self, name: str, payload: Any) -> bool:
         text = json.dumps(payload, ensure_ascii=False, default=str)
         try:
@@ -155,6 +227,39 @@ class RuntimeStore:
             )
         return events
 
+    def delete_event(self, event_id: int) -> bool:
+        try:
+            with self._lock, self._connect() as connection:
+                cursor = connection.execute(
+                    "delete from runtime_events where id = ?",
+                    (event_id,),
+                )
+                deleted = bool(cursor.rowcount)
+            self.last_error = None
+            return deleted
+        except sqlite3.Error as exc:
+            self._raise_failure(exc)
+
+    def clear_events(self, *, names: list[str] | None = None) -> int:
+        try:
+            with self._lock, self._connect() as connection:
+                if names:
+                    clean_names = [name for name in names if isinstance(name, str) and name.strip()]
+                    if not clean_names:
+                        return 0
+                    placeholders = ",".join("?" for _ in clean_names)
+                    cursor = connection.execute(
+                        f"delete from runtime_events where name in ({placeholders})",
+                        tuple(clean_names),
+                    )
+                else:
+                    cursor = connection.execute("delete from runtime_events")
+                deleted = int(cursor.rowcount if cursor.rowcount is not None else 0)
+            self.last_error = None
+            return deleted
+        except sqlite3.Error as exc:
+            self._raise_failure(exc)
+
     def require_ready(self) -> None:
         self._initialize()
         try:
@@ -183,7 +288,10 @@ class RuntimeStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
             with self._lock, self._connect() as connection:
-                connection.execute("pragma journal_mode = wal")
+                try:
+                    connection.execute("pragma journal_mode = wal")
+                except sqlite3.Error as wal_exc:
+                    self.last_error = f"WAL unavailable, using default journal mode: {wal_exc}"
                 connection.execute(
                     """
                     create table if not exists runtime_json (
@@ -209,7 +317,7 @@ class RuntimeStore:
             self._raise_failure(exc)
 
     def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.path, timeout=5.0)
+        return sqlite3.connect(self.path, timeout=30.0)
 
     def _raise_failure(self, exc: BaseException) -> None:
         self.last_error = str(exc)

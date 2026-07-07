@@ -7,6 +7,13 @@
 
 ## 当前执行依据
 
+- `../docs/context_observation_tool_mainline_spec_zh.md`：当前唯一权威主线。观察线写结构化证据；对话线默认不注入窗口观察；模型只通过 `memory.search(query)` 按需取证；移除 planner、三工具、关键词路由、固定裁剪和 fallback 堆叠。
+- 自动观察恢复约束已并入上述主线 spec：统一窗口解析器、GetForegroundWindow=0 时枚举可见窗口、聊天打开不暂停 watcher、VLM 输出用 schema 收敛、失败分型记录日志。
+
+## 历史参考
+
+以下文件只用于回看设计过程，不再直接指导实现。若与当前主线冲突，以 `../docs/context_observation_tool_mainline_spec_zh.md` 为准。
+
 - `ambient_companion_product_spec_zh.md`：Ambient Companion / 陪伴式桌面伙伴的新产品中心，摘要降级为后台感知能力。
 - `application_agent_spec_zh.md`：桌宠式窗口 Copilot 的上下文与记忆设计草案。
 - `current_execution_status_and_roadmap.md`：当前已完成能力、已清理内容和下一步路线。
@@ -14,8 +21,8 @@
 - `two_line_chat_window_spec_zh.md`：自动观察线和用户对话线的产品拆分。
 - `local_runtime_store_policy_zh.md`：本地 RuntimeStore 策略。
 - `kv_cache_profile_and_agent_split_spec_zh.md`：KV cache 友好的 profile/context 分层与双线 agent 拆分。
-- `hermes_like_tool_layer_spec_zh.md`：Hermes-like 三工具 agent 层，替代旧关键词路由。
-- `context_vision_ui_next_spec_zh.md`：WebUI 精简、视觉识别质量、按问题回看截图与桌宠 UI 下一阶段规格。
+- `hermes_like_tool_layer_spec_zh.md`：历史 Hermes-like 三工具 agent 层，三工具/planner 部分已废弃。
+- `context_vision_ui_next_spec_zh.md`：历史 WebUI/视觉追问规格，其中关键词路由和按规则回看图片部分已废弃。
 
 ## 当前设计原则
 
@@ -23,6 +30,6 @@
 - 产品中心是陪伴式桌面伙伴；截图 + VLM 是后台感知能力，不是前台产品本体。
 - 默认不汇报屏幕，默认陪伴；只有用户邀请时才进入分析。
 - 本地 RuntimeStore 保存运行时状态和短期会话记忆。
-- 用户提问时先回应意图和情绪；用户邀请分析时，才使用截图、最近窗口摘要、当前观察卡和短期记忆。
-- 固定系统提示词、用户可编辑 profile、动态上下文和对话历史必须分层。
+- 用户提问时默认只注入 profile 和当前会话历史；需要窗口或记忆证据时，由模型调用唯一工具 `memory.search(query)`。
+- 固定系统提示词、用户可编辑 profile、动态工具结果和对话历史必须分层。
 - 主链路不行就明确失败、暂停或提示用户，不引入掩盖问题的替代链。

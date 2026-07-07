@@ -24,18 +24,33 @@ WindowType = Literal[
 
 
 class CandidateQuestion(BaseModel):
-    question: str
-    category: str
-    reason: str
-    priority: float = Field(ge=0, le=1)
+    question: str = ""
+    category: str = ""
+    reason: str = ""
+    priority: float = Field(default=0, ge=0, le=1)
+
+
+class WindowRegion(BaseModel):
+    """Structured visual details for one spatial region of the window."""
+
+    name: str = ""
+    location: str = ""
+    content: str = ""
+    visible_text: list[str] = Field(default_factory=list)
+    ui_elements: list[str] = Field(default_factory=list)
+    uncertainty: str | None = None
 
 
 class WindowAnalysis(BaseModel):
     window_type: WindowType
     summary: str
-    key_points: list[str]
-    candidate_questions: list[CandidateQuestion]
+    key_points: list[str] = Field(default_factory=list)
+    candidate_questions: list[CandidateQuestion] = Field(default_factory=list)
     caution: str | None = None
+    regions: list[WindowRegion] = Field(default_factory=list)
+    visible_text: list[str] = Field(default_factory=list)
+    ui_elements: list[str] = Field(default_factory=list)
+    entities: list[str] = Field(default_factory=list)
     uncertain_areas: list[str] = Field(default_factory=list)
 
 
@@ -44,6 +59,7 @@ class VisionInput(BaseModel):
     original_size: list[int] = Field(default_factory=list, description="[width, height] 原图像素")
     sent_size: list[int] = Field(default_factory=list, description="[width, height] 缩放后送入模型的像素")
     long_edge: int = 0
+    max_pixels: int = 0
     detail_mode: str = ""
 
 

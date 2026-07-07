@@ -21,23 +21,24 @@ def make_capture(title: str, tmp_path: Path, app_name: str = "Code.exe") -> RawW
     )
 
 
-def test_observation_builder_creates_minimal_coding_card(tmp_path) -> None:
+def test_observation_builder_creates_minimal_metadata_card(tmp_path) -> None:
     capture = make_capture("README.md - Visual Studio Code", tmp_path)
 
     observation = ObservationBuilder().build_from_capture(capture)
 
     assert observation.app_name == "Code.exe"
     assert observation.window_title == "README.md - Visual Studio Code"
-    assert observation.window_kind_hint == "coding"
+    assert observation.window_kind_hint == "unknown"
     assert observation.privacy_state == "normal"
+    assert observation.privacy_reasons == []
     assert observation.source_signals == ["window_title", "process", "screenshot"]
 
 
-def test_observation_builder_marks_privacy_without_redacting_or_fallback(tmp_path) -> None:
+def test_observation_builder_does_not_infer_privacy_from_title_keywords(tmp_path) -> None:
     capture = make_capture("Payment password and OTP", tmp_path)
 
     observation = ObservationBuilder().build_from_capture(capture)
 
-    assert observation.privacy_state == "privacy"
+    assert observation.privacy_state == "normal"
+    assert observation.privacy_reasons == []
     assert observation.window_title == "Payment password and OTP"
-    assert observation.privacy_reasons

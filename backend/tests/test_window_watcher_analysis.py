@@ -20,11 +20,18 @@ class FakeCaptureService:
             window_title=capture.window_title,
             window_bounds=capture.window_bounds,
         )
+        self.foreground_capture_calls = 0
+        self.window_info_capture_calls = 0
 
     def get_foreground_window_info(self) -> ForegroundWindowInfo:
         return self.info
 
     def capture_foreground_window(self) -> RawWindowCapture:
+        self.foreground_capture_calls += 1
+        return self.capture
+
+    def capture_window_info(self, info: ForegroundWindowInfo) -> RawWindowCapture:
+        self.window_info_capture_calls += 1
         return self.capture
 
 
@@ -45,6 +52,12 @@ class SequenceCaptureService:
         return self.info
 
     def capture_foreground_window(self) -> RawWindowCapture:
+        return self._next_capture()
+
+    def capture_window_info(self, info: ForegroundWindowInfo) -> RawWindowCapture:
+        return self._next_capture()
+
+    def _next_capture(self) -> RawWindowCapture:
         capture = self.captures[min(self.index, len(self.captures) - 1)]
         self.index += 1
         return capture
@@ -176,6 +189,27 @@ async def test_watcher_manual_observe_once_without_starting_auto_loop(tmp_path) 
         ("analyzing", "window-watch-manual-analysis-started"),
         ("idle", "window-watch-manual-analysis-finished"),
     ]
+
+
+@pytest.mark.anyio
+async def test_watcher_manual_observe_uses_fresh_foreground_capture(tmp_path) -> None:
+    current_capture = make_capture(tmp_path, screenshot_hash="current")
+    capture_service = FakeCaptureService(current_capture)
+    analysis_service = FakeAnalysisService()
+    watcher = WindowWatcherService(
+        capture_service=capture_service,
+        analysis_service=analysis_service,
+        state_service=FakeStateService(),
+        interval_seconds=1.0,
+        capture_min_interval_seconds=10.0,
+        analysis_min_interval_seconds=10.0,
+    )
+
+    await watcher.observe_once_now()
+
+    assert analysis_service.captures == [current_capture]
+    assert capture_service.foreground_capture_calls == 1
+    assert capture_service.window_info_capture_calls == 0
 
 
 @pytest.mark.anyio

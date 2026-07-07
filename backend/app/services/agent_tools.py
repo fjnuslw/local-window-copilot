@@ -2,24 +2,27 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from dataclasses import dataclass, field
-from pathlib import Path
+from datetime import datetime
 from typing import Any
 
 from app.core.config import get_settings
 from app.schemas.chat import ChatSession
-from app.schemas.memory import MemoryItem
 from app.services.local_copilot_identity import (
     is_local_copilot_title,
     mentions_local_copilot,
 )
 from app.services.memory import MemoryService
-from app.services.profile_store import get_profile_store
-from app.services.screenshot_crop import maybe_crop_for_question
-from app.services.vision_model_client import VisionModelClient
+from app.services.vision_model_client import format_window_observation
 
 
-AGENT_TOOL_NAMES = ("screen.look", "memory.search", "memory.remember")
+AGENT_TOOL_NAMES = ("memory.search",)
+_OPENAI_TOOL_NAMES = {"memory_search": "memory.search"}
+_INTERNAL_TO_OPENAI = {v: k for k, v in _OPENAI_TOOL_NAMES.items()}
+
+_CJK_PATTERN = re.compile(r"[\u4e00-\u9fff]+")
+_TOKEN_PATTERN = re.compile(r"[\u4e00-\u9fff]+|[A-Za-z0-9]+")
 
 
 @dataclass(frozen=True)
@@ -28,11 +31,26 @@ class AgentToolSpec:
     description: str
     parameters: dict[str, Any]
 
+    @property
+    def openai_name(self) -> str:
+        return _INTERNAL_TO_OPENAI[self.name]
+
     def to_model_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
+            "openai_name": self.openai_name,
             "description": self.description,
             "parameters": self.parameters,
+        }
+
+    def to_openai_tool(self) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.openai_name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
         }
 
 
@@ -40,6 +58,8 @@ class AgentToolSpec:
 class AgentToolCall:
     name: str
     arguments: dict[str, Any] = field(default_factory=dict)
+    call_id: str | None = None
+    model_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -49,6 +69,8 @@ class AgentToolResult:
     content: str
     data: dict[str, Any] = field(default_factory=dict)
     user_error: str | None = None
+    call_id: str | None = None
+    model_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -57,93 +79,45 @@ class AgentToolContext:
     latest: Any | None
     history_summaries: list[dict[str, Any]]
     chat_history: list[ChatSession]
-    user_goals: list[dict[str, Any]]
-    user_image_path: Path | None = None
-    user_image_name: str | None = None
-
-
-@dataclass(frozen=True)
-class _SelectedScreen:
-    image_id: str
-    image_path: Path
-    app_name: str
-    window_title: str
-    window_type: str
-    source: str
-    summary: str = ""
+    user_goals: list[dict[str, Any]] = field(default_factory=list)
 
 
 class AgentToolRegistry:
-    """Small model visible tool registry.
+    """Single model-visible context tool registry.
 
-    Only three tools are exposed to the planner. Internal providers may use
-    screenshots, profile md, runtime memory, and conversation history.
+    The chat path does not inject screen observations by default. The model gets
+    stable profile/dialogue context, then explicitly calls memory.search when it
+    needs current screen, recent observations, remembered facts, or prior turns.
     """
 
     def __init__(self) -> None:
         self._specs = {
-            spec.name: spec
-            for spec in (
-                AgentToolSpec(
-                    name="screen.look",
-                    description=(
-                        "Inspect the user's current or recent screen image. Use this when "
-                        "the user asks what is on a page/window/screenshot, asks about UI "
-                        "details, visible text, buttons, layout, or says they want you to "
-                        "look at the screen. Do not ask the user what to inspect if their "
-                        "request already points at the visible screen."
-                    ),
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "question": {
-                                "type": "string",
-                                "description": "The user's visual question in natural language.",
-                            }
-                        },
-                        "required": ["question"],
-                    },
+            "memory.search": AgentToolSpec(
+                name="memory.search",
+                description=(
+                    "Search local evidence on demand. Returns only context related to the query, "
+                    "with source, record_id, and screenshot metadata when available. Call this before "
+                    "answering questions about screen content, current pages/code/windows, recent visual "
+                    "context, remembered facts, or earlier conversation details."
                 ),
-                AgentToolSpec(
-                    name="memory.search",
-                    description=(
-                        "Search local profile, useful notes, recent conversation, and recent "
-                        "screen index. Use this for questions about preferences, prior talk, "
-                        "project direction, or non-visual context."
-                    ),
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "The user's question or search query.",
-                            }
-                        },
-                        "required": ["query"],
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The user's question or the specific local evidence needed.",
+                        }
                     },
-                ),
-                AgentToolSpec(
-                    name="memory.remember",
-                    description=(
-                        "Write a durable local note. Use only when the user explicitly asks "
-                        "you to remember something or the note is clearly a stable preference."
-                    ),
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "note": {
-                                "type": "string",
-                                "description": "One concise memory note to save.",
-                            }
-                        },
-                        "required": ["note"],
-                    },
-                ),
+                    "required": ["query"],
+                },
             )
         }
 
     def manifest(self) -> list[dict[str, Any]]:
         return [self._specs[name].to_model_dict() for name in AGENT_TOOL_NAMES]
+
+    def openai_tools(self) -> list[dict[str, Any]]:
+        return [self._specs[name].to_openai_tool() for name in AGENT_TOOL_NAMES]
 
     def manifest_for_prompt(self) -> str:
         return json.dumps(self.manifest(), ensure_ascii=False, indent=2)
@@ -156,26 +130,62 @@ class AgentToolRegistry:
             if not isinstance(raw, dict):
                 raise ValueError("Each tool call must be an object.")
             name = str(raw.get("name") or "").strip()
-            if name not in self._specs:
+            internal_name = _OPENAI_TOOL_NAMES.get(name, name)
+            if internal_name not in self._specs:
                 raise ValueError(f"Unknown tool: {name or '<empty>'}.")
             args = raw.get("arguments") or {}
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args) if args.strip() else {}
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"Tool arguments for {name} must be JSON.") from exc
             if not isinstance(args, dict):
                 raise ValueError(f"Tool arguments for {name} must be an object.")
-            calls.append(AgentToolCall(name=name, arguments=args))
-        limit = get_settings().agent_tool_call_limit
-        if len(calls) > limit:
-            raise ValueError(f"Too many tool calls: {len(calls)} > {limit}.")
+            calls.append(AgentToolCall(name=internal_name, arguments=args, model_name=name))
+        return calls
+
+    def from_openai_tool_calls(self, raw_calls: Any) -> list[AgentToolCall]:
+        if not isinstance(raw_calls, list):
+            return []
+        calls: list[AgentToolCall] = []
+        for raw in raw_calls:
+            if not isinstance(raw, dict):
+                continue
+            function = raw.get("function")
+            if not isinstance(function, dict):
+                continue
+            model_name = str(function.get("name") or "").strip()
+            internal_name = _OPENAI_TOOL_NAMES.get(model_name, model_name)
+            if internal_name not in self._specs:
+                continue
+            args_raw = function.get("arguments") or {}
+            if isinstance(args_raw, str):
+                try:
+                    args = json.loads(args_raw) if args_raw.strip() else {}
+                except json.JSONDecodeError:
+                    args = {}
+            elif isinstance(args_raw, dict):
+                args = args_raw
+            else:
+                args = {}
+            calls.append(
+                AgentToolCall(
+                    name=internal_name,
+                    arguments=args,
+                    call_id=str(raw.get("id") or ""),
+                    model_name=model_name,
+                )
+            )
         return calls
 
 
 class AgentToolRuntime:
-    def __init__(
-        self,
-        *,
-        vision_model_client: VisionModelClient,
-        memory_service: MemoryService | None,
-    ) -> None:
-        self.vision_model_client = vision_model_client
+    """memory.search 工具执行器。
+
+    Ranker 使用 SQLite FTS5 BM25（见 spec §5.3），不依赖 VLM。
+    """
+
+    def __init__(self, *, memory_service: MemoryService | None) -> None:
         self.memory_service = memory_service
 
     def execute_many(
@@ -190,307 +200,296 @@ class AgentToolRuntime:
         call: AgentToolCall,
         context: AgentToolContext,
     ) -> AgentToolResult:
-        if call.name == "screen.look":
-            return self._screen_look(call, context)
         if call.name == "memory.search":
             return self._memory_search(call, context)
-        if call.name == "memory.remember":
-            return self._memory_remember(call, context)
         raise ValueError(f"Unknown tool: {call.name}")
 
-    def _screen_look(
-        self,
-        call: AgentToolCall,
-        context: AgentToolContext,
-    ) -> AgentToolResult:
-        question = str(call.arguments.get("question") or context.question).strip()
-        if not question:
-            return AgentToolResult(
-                name=call.name,
-                ok=False,
-                content="screen.look failed: empty question.",
-                user_error="我没拿到要看的问题，不能执行看图。",
-            )
-        if context.user_image_path is None and context.latest is not None:
-            title = str(getattr(context.latest.capture, "window_title", "") or "")
-            observation = getattr(context.latest, "observation", None)
-            if is_local_copilot_title(title):
-                return AgentToolResult(
-                    name=call.name,
-                    ok=False,
-                    content="screen.look failed: latest screen is local copilot UI.",
-                    user_error="当前观察来自对话窗或桌宠自身，不能当作用户窗口。请先切回目标窗口并点击「观察」。",
-                )
-            if observation is not None and observation.privacy_state == "privacy":
-                return AgentToolResult(
-                    name=call.name,
-                    ok=False,
-                    content="screen.look failed: latest screen is privacy protected.",
-                    user_error="当前窗口可能包含敏感信息，我不会基于截图继续回答。请切换到非敏感窗口后再观察。",
-                )
-        selected = self._select_screen(question, context)
-        if selected is None:
-            return AgentToolResult(
-                name=call.name,
-                ok=False,
-                content="screen.look failed: no valid user screen image.",
-                user_error="我现在没有可用的目标窗口截图。请先切回目标窗口并点击「观察」。",
-            )
-
-        settings = get_settings()
-        visual_prompt = settings.visual_question_answer_prompt_path.read_text(
-            encoding="utf-8"
-        )
-        effective_image_path, crop_reason = maybe_crop_for_question(
-            question,
-            selected.image_path,
-        )
-        chunks = list(
-            self.vision_model_client.stream_visual_answer(
-                question=question,
-                image_path=effective_image_path,
-                visual_prompt=visual_prompt,
-                image_long_edge=settings.visual_answer_image_long_edge,
-            )
-        )
-        visual_answer = "".join(chunks).strip()
-        if not visual_answer:
-            return AgentToolResult(
-                name=call.name,
-                ok=False,
-                content="screen.look failed: vision model returned empty content.",
-                user_error="我看了截图，但视觉模型没有返回内容。",
-            )
-        meta_lines = [
-            f"- image_id: {selected.image_id}",
-            f"- source: {selected.source}",
-            f"- app: {selected.app_name}",
-            f"- title: {selected.window_title}",
-            f"- type: {selected.window_type}",
-            f"- crop: {crop_reason}",
-        ]
-        if selected.summary:
-            meta_lines.append(f"- indexed_summary: {selected.summary[:300]}")
-        return AgentToolResult(
-            name=call.name,
-            ok=True,
-            content="屏幕/图片细看结果：\n"
-            + visual_answer
-            + "\n\n窗口元信息：\n"
-            + "\n".join(meta_lines),
-            data={
-                "image_id": selected.image_id,
-                "image_path": str(effective_image_path),
-                "source": selected.source,
-                "app_name": selected.app_name,
-                "window_title": selected.window_title,
-                "window_type": selected.window_type,
-                "crop_reason": crop_reason,
-                "visual_answer": visual_answer,
-            },
-        )
-
-    def _memory_search(
-        self,
-        call: AgentToolCall,
-        context: AgentToolContext,
-    ) -> AgentToolResult:
+    def _memory_search(self, call: AgentToolCall, context: AgentToolContext) -> AgentToolResult:
         query = str(call.arguments.get("query") or context.question).strip()
-        settings = get_settings()
-        parts: list[str] = []
-        profile_packet = get_profile_store().profile_packet().strip()
-        if profile_packet:
-            parts.append("profile.md：\n" + profile_packet)
+        candidates = self._collect_candidates(context)
+        if not candidates:
+            payload = {
+                "query": query,
+                "results": [],
+                "missing": ["no_local_context_available"],
+                "warnings": ["没有可用的窗口观察、记忆或历史对话。需要屏幕证据时请先观察窗口。"],
+            }
+            return self._json_result(call, ok=False, payload=payload)
 
-        if context.latest is not None and not self._is_invalid_latest(context.latest):
-            parts.append(
-                "当前窗口索引：\n"
-                f"- 应用：{context.latest.capture.app_name}\n"
-                f"- 标题：{context.latest.capture.window_title}\n"
-                f"- 类型：{context.latest.analysis.window_type}\n"
-                f"- 观察：{context.latest.analysis.summary}"
-            )
-
-        recent_screen_lines: list[str] = []
-        for item in context.history_summaries[-settings.window_summary_retrieve_count :]:
-            title = str(item.get("window_title") or "")
-            summary = str(item.get("summary") or "")
-            if is_local_copilot_title(title) or mentions_local_copilot(summary):
-                continue
-            app = str(item.get("app_name") or "")
-            ts = str(item.get("created_at") or "")[:19].replace("T", " ")
-            recent_screen_lines.append(f"- [{ts}] {app} · {title}: {summary[:220]}")
-        if recent_screen_lines:
-            parts.append("最近屏幕索引：\n" + "\n".join(recent_screen_lines))
-
-        if self.memory_service is not None:
-            observation = (
-                context.latest.observation
-                if context.latest is not None and context.latest.observation is not None
-                else None
-            )
-            memory_items = self.memory_service.retrieve_for_observation(
-                observation,
-                question=query,
-                limit=settings.memory_retrieve_count,
-            )
-            memory_lines = [
-                f"- {item.text[:settings.memory_item_max_chars]}"
-                for item in memory_items
-                if item.text.strip() and not mentions_local_copilot(item.text)
-            ]
-            if memory_lines:
-                parts.append("相关记忆：\n" + "\n".join(memory_lines))
-
-        conversation_lines: list[str] = []
-        for session in context.chat_history[-settings.chat_history_turns :]:
-            q = session.question.strip()
-            a = session.answer.strip()
-            if not q or not a or session.status != "done":
-                continue
-            if mentions_local_copilot(q) or mentions_local_copilot(a):
-                continue
-            conversation_lines.append(f"- 用户：{q[:180]}\n  助手：{a[:260]}")
-        if conversation_lines:
-            parts.append("最近对话：\n" + "\n".join(conversation_lines))
-
-        if context.user_goals:
-            goal_lines = []
-            for item in context.user_goals[:5]:
-                if not isinstance(item, dict):
-                    continue
-                label = str(item.get("situation_label") or "").strip()
-                question_text = str(item.get("question") or "").strip()
-                if label and question_text:
-                    goal_lines.append(f"- {label}: {question_text[:180]}")
-            if goal_lines:
-                parts.append("用户近期关注：\n" + "\n".join(goal_lines))
-
-        content = "\n\n".join(parts).strip() or "没有检索到相关本地记忆。"
-        return AgentToolResult(
-            name=call.name,
-            ok=True,
-            content=content,
-            data={"query": query},
+        selected = self._rank_candidates(query=query, candidates=candidates)
+        results = [self._format_result(candidate) for candidate in selected]
+        payload = {
+            "query": query,
+            "results": results,
+            "missing": [] if results else ["no_relevant_local_context"],
+            "warnings": [] if results else ["工具没有找到和问题足够相关的本地证据。"],
+        }
+        return self._json_result(
+            call,
+            ok=bool(results),
+            payload=payload,
+            data={"query": query, "candidate_count": len(candidates), "selected_count": len(results)},
         )
 
-    def _memory_remember(
-        self,
-        call: AgentToolCall,
-        context: AgentToolContext,
-    ) -> AgentToolResult:
-        note = str(call.arguments.get("note") or "").strip()
-        if not note:
-            return AgentToolResult(
-                name=call.name,
-                ok=False,
-                content="memory.remember failed: empty note.",
-                user_error="我没有拿到要记住的内容。",
-            )
-        if self.memory_service is None:
-            return AgentToolResult(
-                name=call.name,
-                ok=False,
-                content="memory.remember failed: memory service disabled.",
-                user_error="当前记忆服务没有启用，不能写入记忆。",
-            )
-        observation_id = (
-            context.latest.observation.observation_id
-            if context.latest is not None and context.latest.observation is not None
-            else None
-        )
-        item: MemoryItem = self.memory_service.remember_note(
-            note=note,
-            observation_id=observation_id,
-            tags=["agent_note"],
-        )
-        return AgentToolResult(
-            name=call.name,
-            ok=True,
-            content=f"已写入记忆：{item.text}",
-            data={"memory_id": item.memory_id},
-        )
-
-    def _select_screen(
-        self,
-        question: str,
-        context: AgentToolContext,
-    ) -> _SelectedScreen | None:
-        candidates: list[tuple[int, _SelectedScreen]] = []
-        if context.user_image_path is not None and context.user_image_path.exists():
-            candidates.append(
-                (
-                    2_000,
-                    _SelectedScreen(
-                        image_id="user_upload",
-                        image_path=context.user_image_path,
-                        app_name="user_upload",
-                        window_title=context.user_image_name or context.user_image_path.name,
-                        window_type="unknown",
-                        source="user_image",
-                        summary="用户本轮上传或粘贴的图片。",
-                    ),
-                )
-            )
-        if context.latest is not None and not self._is_invalid_latest(context.latest):
-            path = Path(context.latest.capture.screenshot_path)
-            if path.exists():
-                candidates.append(
-                    (
-                        1_000 + _score_screen(question, (
-                            context.latest.capture.app_name,
-                            context.latest.capture.window_title,
-                            context.latest.analysis.window_type,
-                            context.latest.analysis.summary,
-                        )),
-                        _SelectedScreen(
-                            image_id="current",
-                            image_path=path,
-                            app_name=context.latest.capture.app_name,
-                            window_title=context.latest.capture.window_title,
-                            window_type=context.latest.analysis.window_type,
-                            source="current_screen",
-                            summary=context.latest.analysis.summary,
-                        ),
-                    )
-                )
+    def _collect_candidates(self, context: AgentToolContext) -> list[dict[str, Any]]:
+        candidates: list[dict[str, Any]] = []
+        latest = context.latest
+        if latest is not None and not self._is_invalid_latest(latest):
+            content = self._latest_content(latest)
+            candidates.append({
+                "id": f"latest:{latest.capture.screenshot_hash}",
+                "source": "window:latest_analysis",
+                "record_id": None,
+                "created_at": latest.analyzed_at.isoformat() if latest.analyzed_at else "",
+                "app_name": latest.capture.app_name or "",
+                "window_title": latest.capture.window_title or "",
+                "window_type": latest.analysis.window_type,
+                "screenshot_path": str(latest.capture.screenshot_path),
+                "screenshot_hash": latest.capture.screenshot_hash,
+                "content": content,
+                "rank_text": self._rank_text(content),
+            })
 
         for item in context.history_summaries:
             title = str(item.get("window_title") or "")
-            summary = str(item.get("summary") or "")
-            if is_local_copilot_title(title) or mentions_local_copilot(summary):
+            content = self._summary_record_content(item)
+            if is_local_copilot_title(title) or mentions_local_copilot(self._rank_text(content)):
                 continue
-            path_text = str(item.get("screenshot_path") or "")
-            if not path_text:
-                continue
-            path = Path(path_text)
-            if not path.exists():
-                continue
-            app = str(item.get("app_name") or "")
-            wtype = str(item.get("window_type") or "")
-            score = _score_screen(question, (app, title, wtype, summary))
-            if score <= 0:
-                continue
-            image_id = str(item.get("record_id") or item.get("screenshot_hash") or path.name)
-            candidates.append(
-                (
-                    score,
-                    _SelectedScreen(
-                        image_id=image_id,
-                        image_path=path,
-                        app_name=app,
-                        window_title=title,
-                        window_type=wtype,
-                        source="screen_history",
-                        summary=summary,
-                    ),
-                )
-            )
+            record_id = str(item.get("record_id") or "")
+            candidates.append({
+                "id": f"window:{record_id or item.get('screenshot_hash') or len(candidates)}",
+                "source": "window:summaries",
+                "record_id": record_id or None,
+                "created_at": str(item.get("created_at") or ""),
+                "app_name": str(item.get("app_name") or ""),
+                "window_title": title,
+                "window_type": str(item.get("window_type") or ""),
+                "screenshot_path": str(item.get("screenshot_path") or ""),
+                "screenshot_hash": str(item.get("screenshot_hash") or ""),
+                "content": content,
+                "rank_text": self._rank_text(content),
+            })
 
+        if self.memory_service is not None:
+            settings = get_settings()
+            for item in self.memory_service.recent_items(limit=settings.memory_retrieve_count):
+                if item.kind == "analysis_summary":
+                    continue
+                text = item.text.strip()
+                if not text or mentions_local_copilot(text):
+                    continue
+                candidates.append({
+                    "id": f"memory:{item.memory_id}",
+                    "source": "memory:items",
+                    "record_id": item.memory_id,
+                    "created_at": item.created_at.isoformat(),
+                    "app_name": "",
+                    "window_title": "",
+                    "window_type": item.kind,
+                    "screenshot_path": "",
+                    "screenshot_hash": "",
+                    "content": {"text": text, "tags": item.tags, "metadata": item.metadata},
+                    "rank_text": text,
+                })
+
+        for session in context.chat_history:
+            text = f"用户：{session.question}\n助手：{session.answer}".strip()
+            if not text or mentions_local_copilot(text):
+                continue
+            candidates.append({
+                "id": f"chat:{session.session_id}",
+                "source": "assistant:chat:history",
+                "record_id": session.session_id,
+                "created_at": session.updated_at.isoformat(),
+                "app_name": "",
+                "window_title": "",
+                "window_type": "conversation",
+                "screenshot_path": session.image_path or "",
+                "screenshot_hash": "",
+                "content": {"question": session.question, "answer": session.answer, "status": session.status},
+                "rank_text": text,
+            })
+
+        # 跨会话 FTS5 检索（spec §6.2）：从持久索引中按 BM25 检索历史对话
+        fts_hits = self._search_chat_history_fts(query=context.question)
+        for hit in fts_hits:
+            sid = hit["session_id"]
+            if any(c["id"] == f"chat:{sid}" for c in candidates):
+                continue  # 已在最近 N 条中，不重复
+            candidates.append({
+                "id": f"chat_fts:{sid}",
+                "source": "assistant:chat:history",
+                "record_id": sid,
+                "created_at": hit["created_at"],
+                "app_name": "",
+                "window_title": "",
+                "window_type": "conversation",
+                "screenshot_path": "",
+                "screenshot_hash": "",
+                "content": {"question": "(历史会话)", "answer": "(见 FTS5 检索结果)", "bm25_score": hit["bm25_score"]},
+                "rank_text": f"历史会话 {sid}",
+            })
+        return candidates
+
+    @staticmethod
+    def _search_chat_history_fts(*, query: str) -> list[dict[str, Any]]:
+        """从持久 FTS5 索引检索历史对话（spec §6.2）。"""
+        if not query.strip():
+            return []
+        try:
+            from app.services.chat_history_index import get_chat_history_index
+            return get_chat_history_index().search(query=query, limit=5)
+        except Exception:
+            return []
+
+    @staticmethod
+    def _rank_candidates(
+        *,
+        query: str,
+        candidates: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """FTS5 BM25 排名（见 spec §5.3）。
+
+        在内存 SQLite 中建临时 FTS5 索引，对候选证据打分排序。
+        中文采用 bigram 双字滑窗分词，ASCII 整词保留。
+        """
         if not candidates:
-            return None
-        candidates.sort(key=lambda row: row[0], reverse=True)
-        return candidates[0][1]
+            return []
+
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.execute(
+                """
+                CREATE VIRTUAL TABLE search_fts USING fts5(
+                    candidate_id UNINDEXED,
+                    search_text,
+                    tokenize = 'unicode61'
+                )
+                """
+            )
+            for c in candidates:
+                searchable_parts = [
+                    c.get("app_name") or "",
+                    c.get("window_title") or "",
+                    c.get("window_type") or "",
+                    c.get("rank_text") or "",
+                ]
+                search_text = _bigram_tokenize(" ".join(searchable_parts))
+                conn.execute(
+                    "INSERT INTO search_fts VALUES (?, ?)",
+                    (c["id"], search_text),
+                )
+            conn.commit()
+
+            fts_query = _bigram_tokenize(query)
+            if not fts_query.strip():
+                return candidates[:min(4, len(candidates))]
+
+            fts_tokens = fts_query.split()
+            if not fts_tokens:
+                return candidates[:min(4, len(candidates))]
+            fts_match = " OR ".join(fts_tokens)
+
+            rows = conn.execute(
+                "SELECT candidate_id, bm25(search_fts) as score "
+                "FROM search_fts WHERE search_fts MATCH ? "
+                "ORDER BY score ASC LIMIT 4",
+                (fts_match,),
+            ).fetchall()
+
+            by_id = {c["id"]: c for c in candidates}
+            selected: list[dict[str, Any]] = []
+            for cid, score in rows:
+                c = by_id.get(str(cid))
+                if c is None:
+                    continue
+                c = dict(c)
+                c["selection_note"] = f"bm25_score={score:.4f}"
+                selected.append(c)
+            return selected
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _latest_content(latest: Any) -> dict[str, Any]:
+        return {
+            "summary": latest.analysis.summary,
+            "key_points": list(latest.analysis.key_points),
+            "regions": [region.model_dump(mode="json") for region in latest.analysis.regions],
+            "visible_text": list(latest.analysis.visible_text),
+            "ui_elements": list(latest.analysis.ui_elements),
+            "entities": list(latest.analysis.entities),
+            "uncertain_areas": list(latest.analysis.uncertain_areas),
+            "vision_input": latest.vision_input.model_dump(mode="json") if latest.vision_input else None,
+        }
+
+    @staticmethod
+    def _summary_record_content(item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "summary": str(item.get("summary") or ""),
+            "key_points": item.get("key_points") if isinstance(item.get("key_points"), list) else [],
+            "regions": item.get("regions") if isinstance(item.get("regions"), list) else [],
+            "visible_text": item.get("visible_text") if isinstance(item.get("visible_text"), list) else [],
+            "ui_elements": item.get("ui_elements") if isinstance(item.get("ui_elements"), list) else [],
+            "entities": item.get("entities") if isinstance(item.get("entities"), list) else [],
+            "uncertain_areas": item.get("uncertain_areas") if isinstance(item.get("uncertain_areas"), list) else [],
+            "vision_input": item.get("vision_input") if isinstance(item.get("vision_input"), dict) else None,
+        }
+
+    @staticmethod
+    def _rank_text(content: dict[str, Any]) -> str:
+        if "text" in content:
+            return str(content.get("text") or "")
+        return format_window_observation(
+            summary=str(content.get("summary") or ""),
+            key_points=content.get("key_points") if isinstance(content.get("key_points"), list) else [],
+            regions=content.get("regions") if isinstance(content.get("regions"), list) else [],
+            visible_text=content.get("visible_text") if isinstance(content.get("visible_text"), list) else [],
+            ui_elements=content.get("ui_elements") if isinstance(content.get("ui_elements"), list) else [],
+            entities=content.get("entities") if isinstance(content.get("entities"), list) else [],
+            uncertain_areas=content.get("uncertain_areas") if isinstance(content.get("uncertain_areas"), list) else [],
+            vision_input=content.get("vision_input"),
+        )
+
+    @staticmethod
+    def _format_result(candidate: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "source": candidate.get("source"),
+            "record_id": candidate.get("record_id"),
+            "created_at": candidate.get("created_at"),
+            "app_name": candidate.get("app_name"),
+            "window_title": candidate.get("window_title"),
+            "window_type": candidate.get("window_type"),
+            "screenshot_path": candidate.get("screenshot_path"),
+            "screenshot_hash": candidate.get("screenshot_hash"),
+            "content": candidate.get("content"),
+            "selection_note": candidate.get("selection_note") or "",
+        }
+
+    def _json_result(
+        self,
+        call: AgentToolCall,
+        *,
+        ok: bool,
+        payload: dict[str, Any],
+        data: dict[str, Any] | None = None,
+        user_error: str | None = None,
+    ) -> AgentToolResult:
+        return AgentToolResult(
+            name=call.name,
+            ok=ok,
+            content=json.dumps(payload, ensure_ascii=False, indent=2, default=self._json_default),
+            data=data or payload,
+            user_error=user_error,
+            call_id=call.call_id,
+            model_name=call.model_name,
+        )
+
+    @staticmethod
+    def _json_default(value: Any) -> str:
+        if isinstance(value, datetime):
+            return value.isoformat()
+        return str(value)
 
     @staticmethod
     def _is_invalid_latest(latest: Any) -> bool:
@@ -501,24 +500,25 @@ class AgentToolRuntime:
         return bool(observation is not None and observation.privacy_state == "privacy")
 
 
-def _score_screen(question: str, values: tuple[str, ...]) -> int:
-    haystack = " ".join(values).lower()
-    score = 0
-    for token in _query_tokens(question):
-        if token.lower() in haystack:
-            score += len(token)
-    return score
+def _bigram_tokenize(text: str) -> str:
+    """中文双字滑窗 + ASCII 整词分词。
 
-
-def _query_tokens(text: str) -> list[str]:
-    tokens = [
-        item.strip()
-        for item in re.split(r"[，。？！\s,.\?!；;：:、（）()【】\[\]\"']+", text)
-        if len(item.strip()) >= 2
-    ]
-    english = re.findall(r"[A-Za-z][A-Za-z0-9_-]{1,}", text)
-    tokens.extend(english)
-    return list(dict.fromkeys(tokens))
+    CJK 字符按重叠 2 字 token 分词（中文 IR 标准做法），ASCII 字母数字整词保留。
+    不需要外部分词器依赖。
+    """
+    if not text:
+        return ""
+    tokens: list[str] = []
+    parts = _TOKEN_PATTERN.findall(text)
+    for part in parts:
+        if _CJK_PATTERN.match(part):
+            for i in range(len(part) - 1):
+                tokens.append(part[i : i + 2])
+            if len(part) == 1:
+                tokens.append(part)
+        else:
+            tokens.append(part.lower())
+    return " ".join(tokens)
 
 
 def get_agent_tool_registry() -> AgentToolRegistry:

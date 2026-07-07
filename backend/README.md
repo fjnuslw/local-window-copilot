@@ -27,7 +27,7 @@ memory:items
 
 ```powershell
 cd D:\AI_Workspace\window\backend
-uv run uvicorn app.main:app --host 127.0.0.1 --port 18080 --reload --no-access-log
+uv run uvicorn app.main:app --host 127.0.0.1 --port 18081 --reload --no-access-log
 ```
 
 或从项目根目录运行：
@@ -39,7 +39,7 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 18080 --reload --no-access-l
 ## Health
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:18080/health
+Invoke-RestMethod http://127.0.0.1:18081/health
 ```
 
 返回内容包含：

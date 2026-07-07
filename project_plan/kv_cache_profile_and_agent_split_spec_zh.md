@@ -1,5 +1,7 @@
 # KV Cache 友好的 Profile/Context 与双线 Agent 拆分 Spec
 
+> 维护状态：历史 spec。本文中默认读取 latest summary / recent summaries 注入对话的设计已废弃；当前唯一权威主线见 ../docs/context_observation_tool_mainline_spec_zh.md。
+
 更新时间：2026-07-03
 
 ## 1. 目标

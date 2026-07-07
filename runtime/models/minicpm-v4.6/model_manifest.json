@@ -1,25 +1,25 @@
 {
-  "model_id": "OpenBMB/MiniCPM-V-4.6",
-  "repo_id": "OpenBMB/MiniCPM-V-4.6-gguf",
-  "variant": "instruct-f16",
-  "runtime": "llama.cpp",
-  "language_model": "MiniCPM-V-4_6-F16.gguf",
-  "vision_projector": "mmproj-model-f16.gguf",
-  "ctx_size": 8192,
-  "reasoning": "on",
-  "reasoning_format": "deepseek",
-  "reasoning_budget": 512,
-  "required_llamacpp": "b9049+",
-  "files": [
-    {
-      "name": "MiniCPM-V-4_6-F16.gguf",
-      "role": "language_model",
-      "sha256": "34754a0bc132e94de58d4ff50041b3481ebbad19bcde01977bdf32d5b0c9c547"
-    },
-    {
-      "name": "mmproj-model-f16.gguf",
-      "role": "vision_projector",
-      "sha256": "ca931d861d0801d9003e50697cd764721a334107c0e0415a51168ee1938462de"
-    }
-  ]
+    "model_id":  "OpenBMB/MiniCPM-V-4.6",
+    "repo_id":  "OpenBMB/MiniCPM-V-4.6-gguf",
+    "variant":  "instruct-f16",
+    "runtime":  "llama.cpp",
+    "language_model":  "MiniCPM-V-4_6-F16.gguf",
+    "vision_projector":  "mmproj-model-f16.gguf",
+    "ctx_size":  256000,
+    "reasoning":  "off",
+    "reasoning_format":  "none",
+    "reasoning_budget":  0,
+    "required_llamacpp":  "b9049+",
+    "files":  [
+                  {
+                      "name":  "MiniCPM-V-4_6-F16.gguf",
+                      "role":  "language_model",
+                      "sha256":  "34754a0bc132e94de58d4ff50041b3481ebbad19bcde01977bdf32d5b0c9c547"
+                  },
+                  {
+                      "name":  "mmproj-model-f16.gguf",
+                      "role":  "vision_projector",
+                      "sha256":  "ca931d861d0801d9003e50697cd764721a334107c0e0415a51168ee1938462de"
+                  }
+              ]
 }

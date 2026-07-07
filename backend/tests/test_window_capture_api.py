@@ -9,6 +9,7 @@ from app.api.routes import window as window_routes
 from app.core.config import get_settings
 from app.main import app
 from app.services.assistant_state import get_assistant_state_service
+from app.services.local_copilot_identity import is_local_runtime_title
 from app.services.window_capture import is_local_copilot_window
 from app.schemas.window import RawWindowCapture, WindowBounds, WindowWatchStatus
 
@@ -135,5 +136,13 @@ def test_local_copilot_windows_are_excluded_from_capture_targets() -> None:
     )
     assert not is_local_copilot_window(
         class_name="ConsoleWindowClass",
-        title="uvicorn app.main:app",
+        title="cmd.exe - uv run uvicorn app.main:app --host 127.0.0.1 --port 18081",
     )
+    assert is_local_runtime_title(
+        "cmd.exe - uv run uvicorn app.main:app --host 127.0.0.1 --port 18081"
+    )
+    assert not is_local_copilot_window(
+        class_name="Chrome_WidgetWin_1",
+        title="Local Window Copilot · 控制台 - Microsoft Edge",
+    )
+    assert is_local_runtime_title("Local Window Copilot · 控制台 - Microsoft Edge")

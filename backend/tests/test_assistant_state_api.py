@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app import main as main_module
@@ -137,7 +138,7 @@ def test_context_status_endpoint(monkeypatch) -> None:
                 "estimated_tokens": 2048,
                 "usage_percent": 25.0,
                 "remaining_percent": 75.0,
-                "registered_tool_count": 3,
+                "registered_tool_count": 1,
             }
 
     monkeypatch.setattr(assistant_routes, "get_assistant_chat_service", lambda: FakeChatService())
@@ -150,10 +151,14 @@ def test_context_status_endpoint(monkeypatch) -> None:
     assert data["model_name"] == "minicpm-v4.6-f16"
     assert data["usage_percent"] == 25.0
     assert data["remaining_percent"] == 75.0
-    assert data["registered_tool_count"] == 3
+    assert data["registered_tool_count"] == 1
 
 
 def test_pause_and_observe_endpoints_delegate_to_watcher(monkeypatch) -> None:
+    class FakeStatus:
+        def model_dump(self, mode: str = "json"):
+            return {"running": False, "mode": mode}
+
     class FakeWatcher:
         def __init__(self) -> None:
             self.pause_reasons: list[str | None] = []
@@ -162,9 +167,13 @@ def test_pause_and_observe_endpoints_delegate_to_watcher(monkeypatch) -> None:
         async def pause(self, *, reason: str | None = None):
             self.pause_reasons.append(reason)
 
-        def request_observe_once(self, *, resume_after: bool = True):
+        async def observe_once_now(self, *, resume_after: bool = True):
             self.observe_requests += 1
             self.resume_after = resume_after
+            return None
+
+        def status(self):
+            return FakeStatus()
 
     watcher = FakeWatcher()
     monkeypatch.setattr(assistant_routes, "get_window_watcher_service", lambda: watcher)
@@ -177,7 +186,11 @@ def test_pause_and_observe_endpoints_delegate_to_watcher(monkeypatch) -> None:
     assert pause.json() == {"running": False}
     assert watcher.pause_reasons == ["chat-workbench-opened"]
     assert observe.status_code == 200
-    assert observe.json() == {"started": True, "resume_after": True}
+    data = observe.json()
+    assert data["ok"] is True
+    assert data["started"] is False
+    assert data["resume_after"] is True
+    assert data["record"] is None
     assert watcher.observe_requests == 1
     assert watcher.resume_after is True
 
@@ -186,8 +199,8 @@ def test_interaction_traces_endpoint_filters_assistant_trace(monkeypatch) -> Non
     fake = FakeRuntimeStore()
     fake.record_event("assistant:interaction_trace", {
         "session_id": "s1",
-        "stage": "planner_parsed",
-        "payload": {"tool_calls": []},
+        "stage": "answer_messages",
+        "payload": {"messages": []},
     })
     fake.record_event("assistant:state", {"state": "idle"})
     monkeypatch.setattr(webui_routes, "get_runtime_store", lambda: fake)
@@ -198,7 +211,7 @@ def test_interaction_traces_endpoint_filters_assistant_trace(monkeypatch) -> Non
     assert response.status_code == 200
     data = response.json()
     assert data["count"] == 1
-    assert data["items"][0]["payload"]["stage"] == "planner_parsed"
+    assert data["items"][0]["payload"]["stage"] == "answer_messages"
 
 
 def test_assistant_state_service_loads_existing_runtime_state() -> None:
@@ -213,3 +226,42 @@ def test_assistant_state_service_loads_existing_runtime_state() -> None:
     service = AssistantStateService(runtime_store=fake_store)
 
     assert service.get_state().state == "privacy"
+
+
+def test_compact_endpoint_delegates_to_chat_service(monkeypatch) -> None:
+    class FakeChatService:
+        def compact_history(self):
+            return {"status": "ok", "compacted": True}
+
+    monkeypatch.setattr(assistant_routes, "get_assistant_chat_service", lambda: FakeChatService())
+    client = TestClient(app)
+
+    response = client.post("/api/assistant/compact")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "compacted": True}
+
+def test_compact_status_endpoint_delegates_to_chat_service(monkeypatch) -> None:
+    class FakeChatService:
+        def compact_status(self):
+            return {"enabled": True, "summary": {"present": False}}
+
+    monkeypatch.setattr(assistant_routes, "get_assistant_chat_service", lambda: FakeChatService())
+    client = TestClient(app)
+
+    response = client.get("/api/assistant/compact-status")
+
+    assert response.status_code == 200
+    assert response.json() == {"enabled": True, "summary": {"present": False}}
+
+
+def test_webui_contains_compact_panel_static_hooks() -> None:
+    html_path = Path(__file__).parents[1] / "app" / "webui" / "static" / "index.html"
+    html = html_path.read_text(encoding="utf-8")
+
+    assert "compactStatusPanel" in html
+    assert "refreshCompactBtn" in html
+    assert "runCompactBtn" in html
+    assert "async function loadCompactStatus()" in html
+    assert "async function runCompactNow()" in html
+    assert "escapeHTML(summary.text" in html

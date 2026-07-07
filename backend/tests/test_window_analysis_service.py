@@ -6,7 +6,7 @@ from pathlib import Path
 from app.schemas.analyze import CandidateQuestion, VisionInput, WindowAnalysis
 from app.schemas.window import RawWindowCapture, WindowBounds
 from app.services.observation_builder import ObservationBuilder
-from app.services.vision_model_client import extract_json_object, parse_window_analysis
+from app.services.vision_model_client import extract_json_object, extract_response_info, parse_window_analysis
 from app.services.window_analysis import ObservationAgent
 
 
@@ -87,6 +87,28 @@ def make_capture(image_path: Path, screenshot_hash: str = "abc123") -> RawWindow
     )
 
 
+def test_extract_response_info_separates_reasoning_content() -> None:
+    response = {
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "reasoning_content": "internal thinking",
+                    "content": "{\"window_type\":\"document\",\"summary\":\"ok\"}",
+                },
+            }
+        ],
+        "usage": {"completion_tokens": 12},
+    }
+
+    info = extract_response_info(response)
+
+    assert info["content"].startswith("{")
+    assert info["reasoning_content"] == "internal thinking"
+    assert info["finish_reason"] == "stop"
+    assert info["usage"]["completion_tokens"] == 12
+
 def test_parse_window_analysis_extracts_json_after_think_tags() -> None:
     raw = """
 <think>internal reasoning that should be ignored</think>
@@ -152,14 +174,14 @@ def test_window_analysis_service_stores_latest_summary_in_runtime_store(tmp_path
     assert service.get_latest().analysis.summary == "Current window is VS Code with the project README open."
 
 
-def test_window_analysis_service_pauses_privacy_without_model_call(tmp_path) -> None:
+def test_window_analysis_service_does_not_pause_on_title_keywords(tmp_path) -> None:
     capture = make_capture(tmp_path / "capture.png")
     capture.window_title = "Payment password"
     runtime = FakeRuntimeManager()
     client = FakeVisionModelClient(
         WindowAnalysis(
             window_type="ide",
-            summary="Should not be called.",
+            summary="Analyzed by model.",
             key_points=[],
             candidate_questions=[],
         )
@@ -174,12 +196,12 @@ def test_window_analysis_service_pauses_privacy_without_model_call(tmp_path) -> 
 
     result = service.analyze_capture(capture)
 
-    assert runtime.ensure_calls == 0
-    assert client.image_paths == []
+    assert runtime.ensure_calls == 1
+    assert client.image_paths == [capture.screenshot_path]
     assert result.observation is not None
-    assert result.observation.privacy_state == "privacy"
-    assert result.analysis.summary == "当前窗口可能包含敏感信息，已暂停自动分析。"
-    assert runtime_store.data["window:latest_analysis"]["observation"]["privacy_state"] == "privacy"
+    assert result.observation.privacy_state == "normal"
+    assert result.analysis.summary == "Analyzed by model."
+    assert runtime_store.data["window:latest_analysis"]["observation"]["privacy_state"] == "normal"
 
 
 def test_window_analysis_service_records_vision_input_metadata(tmp_path) -> None:
@@ -232,6 +254,18 @@ def test_window_analysis_service_records_screenshot_path_in_summary_store(tmp_pa
         summary="VS Code with project open.",
         key_points=["README", "backend"],
         candidate_questions=[],
+        regions=[
+            {
+                "name": "中间编辑区",
+                "location": "窗口中央",
+                "content": "README 和 backend 代码可见。",
+                "visible_text": ["README", "backend"],
+                "ui_elements": ["编辑器", "滚动条"],
+            }
+        ],
+        visible_text=["README", "backend"],
+        ui_elements=["编辑器", "滚动条"],
+        entities=["VS Code", "README"],
         uncertain_areas=["底部状态栏小字不清晰"],
     )
     runtime = FakeRuntimeManager()
@@ -256,6 +290,9 @@ def test_window_analysis_service_records_screenshot_path_in_summary_store(tmp_pa
     assert record["window_bounds"] == {"left": 10, "top": 20, "right": 810, "bottom": 620}
     assert record["process_id"] == 1234
     assert record["vision_input"]["long_edge"] == 1024
+    assert record["regions"][0]["name"] == "中间编辑区"
+    assert record["visible_text"] == ["README", "backend"]
+    assert record["entities"] == ["VS Code", "README"]
     # find_by_screenshot_hash 应能回查
     found = summary_store.find_by_screenshot_hash("hash-xyz")
     assert found is not None
@@ -264,12 +301,109 @@ def test_window_analysis_service_records_screenshot_path_in_summary_store(tmp_pa
     assert summary_store.find_by_screenshot_hash("nonexistent") is None
 
 
+def test_window_analysis_service_does_not_write_analysis_summary_to_memory(tmp_path) -> None:
+    class FakeMemoryService:
+        def __init__(self) -> None:
+            self.saved = []
+            self.remembered = []
+
+        def save_observation(self, observation):
+            self.saved.append(observation)
+
+        def remember_analysis(self, **kwargs):
+            self.remembered.append(kwargs)
+
+    capture = make_capture(tmp_path / "capture.png")
+    analysis = WindowAnalysis(
+        window_type="ide",
+        summary="VS Code with project open.",
+        key_points=["README"],
+        candidate_questions=[],
+    )
+    memory_service = FakeMemoryService()
+    service = ObservationAgent(
+        runtime_manager=FakeRuntimeManager(),
+        vision_model_client=FakeVisionModelClient(analysis),
+        runtime_store=FakeRuntimeStore(),
+        observation_builder=ObservationBuilder(),
+        memory_service=memory_service,
+    )
+
+    service.analyze_capture(capture)
+
+    assert len(memory_service.saved) == 1
+    assert memory_service.remembered == []
+
+
+def test_parse_window_analysis_backfills_global_fields_from_regions() -> None:
+    raw = """
+{
+  "window_type": "webpage",
+  "summary": "控制台页面。",
+  "regions": [
+    {
+      "name": "顶部栏",
+      "location": "顶部",
+      "content": "标题和刷新按钮可见。",
+      "visible_text": ["Local Window Copilot", "刷新"],
+      "ui_elements": ["标题栏", "刷新按钮"],
+      "uncertainty": null
+    }
+  ],
+  "visible_text": [],
+  "ui_elements": [],
+  "entities": ["Local Window Copilot"],
+  "key_points": ["控制台页面"],
+  "candidate_questions": [],
+  "caution": null,
+  "uncertain_areas": []
+}
+"""
+
+    parsed = parse_window_analysis(raw)
+
+    assert parsed.visible_text == ["Local Window Copilot", "刷新"]
+    assert parsed.ui_elements == ["标题栏", "刷新按钮"]
+
+def test_parse_window_analysis_allows_omitted_legacy_candidate_questions() -> None:
+    raw = """
+{
+  "window_type": "document",
+  "summary": "当前窗口显示文档内容。",
+  "key_points": ["文档正文可见"],
+  "regions": [],
+  "visible_text": ["Agility RAG"],
+  "ui_elements": [],
+  "entities": ["Agility RAG"],
+  "uncertain_areas": []
+}
+"""
+
+    parsed = parse_window_analysis(raw)
+
+    assert parsed.window_type == "document"
+    assert parsed.candidate_questions == []
+    assert parsed.visible_text == ["Agility RAG"]
+
 def test_window_analysis_service_handles_uncertain_areas(tmp_path) -> None:
     """WindowAnalysis.uncertain_areas 字段应能正确解析模型输出。"""
     raw = """
 {
   "window_type": "webpage",
   "summary": "网页内容描述。",
+  "regions": [
+    {
+      "name": "顶部导航",
+      "location": "窗口顶部",
+      "content": "包含标题和导航按钮。",
+      "visible_text": ["首页", "设置"],
+      "ui_elements": ["导航按钮"],
+      "uncertainty": null
+    }
+  ],
+  "visible_text": ["首页", "设置"],
+  "ui_elements": ["导航按钮"],
+  "entities": ["设置"],
   "key_points": ["标题", "导航栏"],
   "candidate_questions": [],
   "caution": null,
@@ -278,6 +412,9 @@ def test_window_analysis_service_handles_uncertain_areas(tmp_path) -> None:
 """
     parsed = parse_window_analysis(raw)
     assert parsed.uncertain_areas == ["底部小字不清晰", "右侧广告位被遮挡"]
+    assert parsed.regions[0].name == "顶部导航"
+    assert parsed.visible_text == ["首页", "设置"]
+    assert parsed.entities == ["设置"]
 
     # 缺省值应为空列表
     raw_no_uncertain = """

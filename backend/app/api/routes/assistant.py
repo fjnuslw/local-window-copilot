@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -12,6 +13,7 @@ from app.services.assistant_chat import get_assistant_chat_service
 from app.services.assistant_state import get_assistant_state_service
 from app.services.window_analysis import get_window_analysis_service
 from app.services.window_watcher import get_window_watcher_service
+from app.services.window_summary_store import get_window_summary_store
 
 
 router = APIRouter(prefix="/api/assistant", tags=["assistant"])
@@ -27,6 +29,7 @@ async def set_state(payload: AssistantStateUpdate) -> AssistantStateResponse:
     return await get_assistant_state_service().set_state(
         payload.state,
         reason=payload.reason,
+        error=payload.error,
     )
 
 
@@ -118,6 +121,16 @@ def context_status() -> dict[str, object]:
     return get_assistant_chat_service().context_status()
 
 
+@router.get("/compact-status")
+def compact_status() -> dict[str, object]:
+    return get_assistant_chat_service().compact_status()
+
+
+@router.post("/compact")
+def compact_history() -> dict[str, object]:
+    return get_assistant_chat_service().compact_history()
+
+
 @router.post("/resume")
 async def resume_auto_watch() -> dict[str, bool]:
     await get_assistant_chat_service().resume_auto_watch()
@@ -131,6 +144,43 @@ async def pause_auto_watch() -> dict[str, bool]:
 
 
 @router.post("/observe")
-async def observe_once() -> dict[str, bool]:
-    get_window_watcher_service().request_observe_once(resume_after=True)
-    return {"started": True, "resume_after": True}
+async def observe_once() -> dict[str, Any]:
+    watcher = get_window_watcher_service()
+    try:
+        result = await watcher.observe_once_now(resume_after=True)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "started": False,
+            "resume_after": True,
+            "error": str(exc),
+            "status": watcher.status().model_dump(mode="json"),
+        }
+
+    if result is None:
+        return {
+            "ok": True,
+            "started": False,
+            "resume_after": True,
+            "record": None,
+            "analysis": None,
+            "status": watcher.status().model_dump(mode="json"),
+        }
+
+    record = get_window_summary_store().find_by_screenshot_hash(result.capture.screenshot_hash)
+    return {
+        "ok": True,
+        "started": False,
+        "resume_after": True,
+        "record": record,
+        "analysis": {
+            "app_name": result.capture.app_name,
+            "window_title": result.capture.window_title,
+            "window_type": result.analysis.window_type,
+            "summary": result.analysis.summary,
+            "screenshot_hash": result.capture.screenshot_hash,
+            "screenshot_path": str(result.capture.screenshot_path),
+            "analyzed_at": result.analyzed_at.isoformat() if result.analyzed_at else None,
+        },
+        "status": watcher.status().model_dump(mode="json"),
+    }

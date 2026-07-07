@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import socket
 import sys
@@ -12,8 +13,38 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_DIR = PROJECT_ROOT / "backend"
-BACKEND_HEALTH_URL = "http://127.0.0.1:18080/health"
+ENV_FILE = BACKEND_DIR / ".env"
 LLAMA_HEALTH_URL = "http://127.0.0.1:18181/health"
+
+
+def read_env_value(key: str, default: str) -> str:
+    value = os.environ.get(key, "").strip()
+    if value:
+        return value
+    if ENV_FILE.exists():
+        for raw_line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            name, value = line.split("=", 1)
+            if name.strip() != key:
+                continue
+            value = value.strip().strip('"').strip("'")
+            return value or default
+    return default
+
+
+def read_backend_port() -> int:
+    raw_port = read_env_value("LWC_BACKEND_PORT", "18081")
+    try:
+        return int(raw_port)
+    except ValueError as exc:
+        raise SystemExit(f"Invalid LWC_BACKEND_PORT={raw_port!r} in {ENV_FILE}") from exc
+
+
+BACKEND_HOST = read_env_value("LWC_BACKEND_HOST", "127.0.0.1")
+BACKEND_PORT = read_backend_port()
+BACKEND_HEALTH_URL = f"http://{BACKEND_HOST}:{BACKEND_PORT}/health"
 
 
 @dataclass
@@ -57,7 +88,7 @@ def static_checks() -> list[CheckResult]:
             check_path("Desktop floating window", PROJECT_ROOT / "apps" / "desktop-floating-window" / "desktop_floating_window.py"),
             check_path("Desktop start script", PROJECT_ROOT / "apps" / "desktop-floating-window" / "start_desktop_window.cmd"),
             check_path("Mascot asset", PROJECT_ROOT / "assets" / "mascot" / "rive_import" / "mascot_base_idle.png"),
-            check_path("Window analysis prompt", PROJECT_ROOT / "experiments" / "prompts" / "analyze_window_v1.txt"),
+            check_path("Window analysis prompt", PROJECT_ROOT / "experiments" / "prompts" / "analyze_window_v2.txt"),
             check_path("llama-server.exe", PROJECT_ROOT / "runtime" / "llama.cpp" / "llama-server.exe"),
             check_path("MiniCPM-V F16 model", PROJECT_ROOT / "runtime" / "models" / "minicpm-v4.6" / "MiniCPM-V-4_6-F16.gguf"),
             check_path("MiniCPM-V mmproj", PROJECT_ROOT / "runtime" / "models" / "minicpm-v4.6" / "mmproj-model-f16.gguf"),
@@ -92,17 +123,18 @@ def check_path(name: str, path: Path, *, required: bool = True) -> CheckResult:
 
 
 def check_backend_port(*, for_start: bool) -> CheckResult:
-    ok, detail = http_ok(BACKEND_HEALTH_URL, timeout=0.8)
+    ok, _detail = http_ok(BACKEND_HEALTH_URL, timeout=0.8)
+    name = f"FastAPI {BACKEND_HOST}:{BACKEND_PORT}"
     if ok:
-        return CheckResult("FastAPI 127.0.0.1:18080", True, "already running")
-    if port_open("127.0.0.1", 18080):
+        return CheckResult(name, True, "already running")
+    if port_open(BACKEND_HOST, BACKEND_PORT):
         return CheckResult(
-            "FastAPI 127.0.0.1:18080",
+            name,
             False,
             "port is occupied but /health is not responding",
         )
     return CheckResult(
-        "FastAPI 127.0.0.1:18080",
+        name,
         True,
         "not running; start_dev will start it" if for_start else "not running",
         required=False,

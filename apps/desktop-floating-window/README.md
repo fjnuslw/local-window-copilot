@@ -13,10 +13,10 @@
 轮询 FastAPI 当前对话和历史对话
 ```
 
-悬浮窗只访问：
+悬浮窗只访问后端服务地址。默认读取 `backend/.env` 中的 `LWC_BACKEND_HOST/LWC_BACKEND_PORT`：
 
 ```text
-http://127.0.0.1:18080
+http://127.0.0.1:18081
 ```
 
 它不直接读写本地数据库文件。
